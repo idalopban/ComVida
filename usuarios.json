@@ -1,0 +1,10 @@
+{
+    "admin": {
+        "password": "$2b$12$YGAcvj3lJuMt9e7qWStZWO5KPN32XgbBFMphdf/0VS2fs2cLS.wq.",
+        "rol": "admin"
+    },
+    "Daniel": {
+        "password": "$2b$12$nMFF7W/F3rR1aYrMpeyequ2TYfrMUHnjv6tZHpgUUERQnw6CwCyZy",
+        "rol": "admin"
+    }
+}
