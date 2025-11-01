@@ -20,7 +20,9 @@ st.set_page_config(
 
 # Determinar la ruta base para los archivos (funciona en Streamlit Cloud y local)
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0] if hasattr(sys, 'argv') else __file__))
-DIRECTORIO_PACIENTES = os.path.join(BASE_DIR, "pacientes")
+
+# --- MODIFICADO: Esta es ahora la carpeta RAÍZ de todos los pacientes ---
+BASE_DIRECTORIO_PACIENTES = os.path.join(BASE_DIR, "pacientes") 
 DB_ALIMENTOS_PATH = os.path.join(BASE_DIR, "alimentos.csv")
 DB_USUARIOS_PATH = os.path.join(BASE_DIR, "usuarios.json")
 LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
@@ -585,26 +587,50 @@ def crear_grafico_somatotipo(endo, meso, ecto):
     return fig
 
 
-# --- Funciones de Manejo de Pacientes ---
+# --- Funciones de Manejo de Pacientes (MODIFICADAS) ---
 
+# --- NUEVO: Helper para obtener el directorio del usuario ---
+def get_directorio_pacientes_usuario(username):
+    """Retorna la ruta al directorio de pacientes para un usuario específico."""
+    if not username:
+        return None
+    # Sanitizar el username por si acaso (aunque el login ya lo valida)
+    safe_username = "".join(c for c in username if c.isalnum() or c in ('_', '-')).rstrip()
+    user_dir = os.path.join(BASE_DIRECTORIO_PACIENTES, safe_username)
+    return user_dir
+
+# --- MODIFICADO: Ahora solo crea el directorio BASE ---
 def inicializar_pacientes():
-    """Crea el directorio de pacientes si no existe."""
-    if not os.path.exists(DIRECTORIO_PACIENTES):
-        os.makedirs(DIRECTORIO_PACIENTES)
+    """Crea el directorio BASE de pacientes si no existe."""
+    if not os.path.exists(BASE_DIRECTORIO_PACIENTES):
+        os.makedirs(BASE_DIRECTORIO_PACIENTES)
 
-def listar_pacientes():
-    """Retorna una lista de nombres de pacientes (sin .json)."""
+# --- MODIFICADO: Acepta 'username' ---
+def listar_pacientes(username):
+    """Retorna una lista de pacientes (sin .json) para el usuario especificado."""
+    user_dir = get_directorio_pacientes_usuario(username)
+    if not user_dir or not os.path.exists(user_dir):
+        return [] # No directory for this user yet
+
     pacientes = []
-    if os.path.exists(DIRECTORIO_PACIENTES):
-        for f in os.listdir(DIRECTORIO_PACIENTES):
+    if os.path.exists(user_dir):
+        for f in os.listdir(user_dir):
             if f.endswith('.json'):
                 pacientes.append(f.replace('.json', ''))
     return pacientes
 
-def cargar_paciente(nombre_archivo):
-    """Carga los datos de un paciente desde un archivo JSON."""
+# --- MODIFICADO: Acepta 'username' ---
+def cargar_paciente(username, nombre_archivo):
+    """Carga los datos de un paciente desde el directorio del usuario."""
+    user_dir = get_directorio_pacientes_usuario(username)
+    if not user_dir:
+        st.error("Error: No se pudo identificar el directorio del usuario.")
+        return None
+        
+    filepath = os.path.join(user_dir, f"{nombre_archivo}.json")
+    
     try:
-        with open(os.path.join(DIRECTORIO_PACIENTES, f"{nombre_archivo}.json"), 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             datos_paciente = json.load(f)
             # Asegurarse de que los campos clave existen
             datos_paciente.setdefault('pliegues', {})
@@ -617,29 +643,50 @@ def cargar_paciente(nombre_archivo):
         st.error(f"Error al cargar el paciente {nombre_archivo}: {e}")
         return None
 
-def guardar_paciente(datos_paciente):
-    """Guarda o actualiza los datos de un paciente en un archivo JSON."""
+# --- MODIFICADO: Acepta 'username' y crea el dir del usuario ---
+def guardar_paciente(username, datos_paciente):
+    """Guarda o actualiza los datos de un paciente en el directorio del usuario."""
+    user_dir = get_directorio_pacientes_usuario(username)
+    if not user_dir:
+        st.error("Error: No se pudo identificar el directorio del usuario para guardar.")
+        return None
+
     nombre = datos_paciente.get('nombre')
     if not nombre:
         st.error("Error: El paciente no tiene nombre. No se puede guardar.")
         return None
         
+    # --- NUEVO: Crear el directorio del usuario si no existe ---
+    if not os.path.exists(user_dir):
+        try:
+            os.makedirs(user_dir)
+        except OSError as e:
+            st.error(f"Error crítico al crear directorio de paciente: {e}")
+            return None
+    # --- FIN NUEVO ---
+        
     # Limpiar nombre para crear archivo
     nombre_archivo = nombre.replace(' ', '_').replace('.', '').lower()
+    filepath = os.path.join(user_dir, f"{nombre_archivo}.json")
     
     try:
-        with open(os.path.join(DIRECTORIO_PACIENTES, f"{nombre_archivo}.json"), 'w', encoding='utf-8') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(datos_paciente, f, indent=4, ensure_ascii=False)
         return nombre_archivo
     except Exception as e:
         st.error(f"Error al guardar el paciente: {e}")
         return None
 
-# --- NUEVA FUNCIÓN PARA ELIMINAR PACIENTE ---
-def eliminar_paciente(nombre_archivo):
-    """Elimina un archivo .json de paciente del directorio."""
+# --- MODIFICADO: Acepta 'username' ---
+def eliminar_paciente(username, nombre_archivo):
+    """Elimina un archivo .json de paciente del directorio del usuario."""
+    user_dir = get_directorio_pacientes_usuario(username)
+    if not user_dir:
+        st.error("Error: No se pudo identificar el directorio del usuario.")
+        return False
+        
     try:
-        filepath = os.path.join(DIRECTORIO_PACIENTES, f"{nombre_archivo}.json")
+        filepath = os.path.join(user_dir, f"{nombre_archivo}.json")
         if os.path.exists(filepath):
             os.remove(filepath)
             return True
@@ -649,7 +696,7 @@ def eliminar_paciente(nombre_archivo):
     except Exception as e:
         st.error(f"Error al eliminar el paciente: {e}")
         return False
-# --- FIN DE NUEVA FUNCIÓN ---
+# --- FIN DE FUNCIONES MODIFICADAS ---
 
 # --- Funciones de Utilidad (Exportación) ---
 
@@ -817,7 +864,7 @@ def generar_excel_composicion(paciente_data):
 
 # --- Funciones de las Páginas de la App ---
 
-# --- PÁGINA DE INICIO (ACTUALIZADA) ---
+# --- PÁGINA DE INICIO (MODIFICADA) ---
 def mostrar_pagina_inicio():
     """Página principal para cargar, seleccionar y registrar pacientes."""
     st.title(f"Gestión de Pacientes 🧑‍⚕️ (Usuario: {st.session_state.usuario})")
@@ -826,10 +873,12 @@ def mostrar_pagina_inicio():
 
     # --- Sección de Carga/Selección de Paciente ---
     st.header("Seleccionar Paciente Existente")
-    pacientes = listar_pacientes()
+    
+    # --- MODIFICADO: Lista pacientes del usuario logueado ---
+    pacientes = listar_pacientes(st.session_state.usuario)
     
     if not pacientes:
-        st.info("No hay pacientes registrados. Registre uno nuevo a continuación.")
+        st.info("No hay pacientes registrados para este usuario. Registre uno nuevo a continuación.")
     
     paciente_seleccionado = st.selectbox("Pacientes Registrados", options=pacientes, index=None, placeholder="Seleccione un paciente...")
     
@@ -840,7 +889,8 @@ def mostrar_pagina_inicio():
         st.rerun()
 
     if col2.button("Cargar Paciente", use_container_width=True) and paciente_seleccionado:
-        st.session_state.paciente_actual = cargar_paciente(paciente_seleccionado)
+        # --- MODIFICADO: Carga paciente del usuario logueado ---
+        st.session_state.paciente_actual = cargar_paciente(st.session_state.usuario, paciente_seleccionado)
         if st.session_state.paciente_actual:
             # Cargar la dieta del paciente a la sesión temporal
             st.session_state.dieta_temporal = st.session_state.paciente_actual.get('dieta_actual', [])
@@ -848,7 +898,8 @@ def mostrar_pagina_inicio():
             st.rerun() # Recargar para reflejar el paciente cargado
     
     if col3.button("Eliminar Paciente", type="primary", use_container_width=True) and paciente_seleccionado:
-        if eliminar_paciente(paciente_seleccionado):
+        # --- MODIFICADO: Elimina paciente del usuario logueado ---
+        if eliminar_paciente(st.session_state.usuario, paciente_seleccionado):
             st.success(f"Paciente '{paciente_seleccionado}' ha sido eliminado.")
             # Limpiar estado
             st.session_state.paciente_actual = None
@@ -944,8 +995,9 @@ def mostrar_pagina_inicio():
                 'dieta_actual': st.session_state.dieta_temporal # Usar la dieta en sesión
             }
             
-            # Guardar en archivo
-            nombre_archivo = guardar_paciente(datos_paciente)
+            # --- MODIFICADO: Guarda el paciente para el usuario logueado ---
+            nombre_archivo = guardar_paciente(st.session_state.usuario, datos_paciente)
+            
             if nombre_archivo:
                 st.success(f"Paciente '{nombre}' guardado/actualizado exitosamente.")
                 st.session_state.paciente_actual = datos_paciente
@@ -956,7 +1008,7 @@ def mostrar_pagina_inicio():
                 col1.metric("IMC", f"{imc:.2f}", diagnostico_imc)
                 col2.metric("GET (Gasto Energético Total)", f"{get:.0f} kcal/día")
 
-# --- PÁGINA DE ANTROPOMETRÍA (ACTUALIZADA CON EXPLICACIÓN) ---
+# --- PÁGINA DE ANTROPOMETRÍA (MODIFICADA) ---
 def mostrar_pagina_antropometria():
     """Página para registrar pliegues, circunferencias, diámetros y ver composición corporal."""
     st.title("Evaluación Antropométrica 📐")
@@ -1063,7 +1115,8 @@ def mostrar_pagina_antropometria():
                 pa['get'] = nuevo_get
                 st.success(f"GET (Cunningham) recalculado con nueva masa magra: {nuevo_get:.0f} kcal")
 
-        guardar_paciente(pa)
+        # --- MODIFICADO: Guarda el paciente para el usuario logueado ---
+        guardar_paciente(st.session_state.usuario, pa)
         st.session_state.paciente_actual = pa 
         
         st.success("Cálculos de composición y somatotipo realizados y guardados.")
@@ -1195,6 +1248,7 @@ def mostrar_pagina_antropometria():
         else:
             st.info("No se han calculado datos para el Somatotipo. Por favor, ingrese las medidas necesarias y presione 'Calcular'.")
 
+# --- PÁGINA DE CREAR DIETA (MODIFICADA) ---
 def mostrar_pagina_crear_dieta():
     """Página para buscar alimentos y agregarlos a la dieta del paciente."""
     st.title("Creación de Dieta 🍲")
@@ -1279,9 +1333,9 @@ def mostrar_pagina_crear_dieta():
         st.session_state.dieta_temporal.append(item_dieta)
         st.success(f"{gramos}g de '{alimento_nombre_sel}' agregados a '{tiempo_comida}'.")
         
-        # Guardar la dieta en el paciente al agregar
+        # --- MODIFICADO: Guarda el paciente para el usuario logueado ---
         st.session_state.paciente_actual['dieta_actual'] = st.session_state.dieta_temporal
-        guardar_paciente(st.session_state.paciente_actual)
+        guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
         st.rerun() # Recargar para que el item aparezca en la tabla correcta
 
     # --- MODIFICACIÓN BÚSQUEDA: Expander ---
@@ -1353,9 +1407,9 @@ def mostrar_pagina_crear_dieta():
                     new_dieta = [item for item in st.session_state.dieta_temporal if item['id'] != item_id_to_delete]
                     st.session_state.dieta_temporal = new_dieta
                     
-                    # Guardar cambios en el paciente
+                    # --- MODIFICADO: Guarda el paciente para el usuario logueado ---
                     st.session_state.paciente_actual['dieta_actual'] = new_dieta
-                    guardar_paciente(st.session_state.paciente_actual)
+                    guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
                     
                     st.success("Alimento eliminado de la dieta.")
                     st.rerun()
@@ -1367,7 +1421,8 @@ def mostrar_pagina_crear_dieta():
             if st.button("Limpiar toda la dieta", type="primary", use_container_width=True):
                 st.session_state.dieta_temporal = []
                 st.session_state.paciente_actual['dieta_actual'] = []
-                guardar_paciente(st.session_state.paciente_actual)
+                # --- MODIFICADO: Guarda el paciente para el usuario logueado ---
+                guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
                 st.rerun()
         # --- FIN MODIFICACIÓN ---
 
