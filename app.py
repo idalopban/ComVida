@@ -107,8 +107,8 @@ def cargar_base_de_datos_alimentos(filepath=DB_ALIMENTOS_PATH):
             'Sodio <NA>': 'Sodio',
             'Potasio <K>': 'Potasio',
             # --- Columnas de micronutrientes agregadas ---
-            'β caroteno equivalentes totales <CARTBQ>': 'Beta-Caroteno',
-            'Vitamina A equivalentes totales <VITA>': 'Vitamina A',
+            'β caroteno equivalentes totais <CARTBQ>': 'Beta-Caroteno',
+            'Vitamina A equivalentes totais <VITA>': 'Vitamina A',
             'Tiamina <THIA>': 'Tiamina',
             'Riboflavina <RIBF>': 'Riboflavina',
             'Niacina <NIA>': 'Niacina',
@@ -211,7 +211,7 @@ def calcular_get(sexo, peso, talla_cm, edad, actividad, formula, masa_magra=0):
     get = geb * factor
     return get
 
-# --- Nuevas Funciones de Composición Corporal y Somatotipo (ISAK) ---
+# --- Funciones de Composición Corporal y Somatotipo (ISAK) ---
 
 def get_densidad_durnin(sexo, edad, L):
     """Calcula la Densidad Corporal (D) según Durnin & Womersley (1974)."""
@@ -245,7 +245,113 @@ def get_densidad_durnin(sexo, edad, L):
             D = 1.1339 - (0.0645 * L)
     return D
 
-# --- FUNCIÓN ORIGINAL MODIFICADA (2C) ---
+# --- NUEVO: Función de conversión DC a % Grasa (Siri) ---
+def calcular_porcentaje_grasa_siri(densidad):
+    """
+    Calcula el % de grasa usando la fórmula de Siri (1961).
+    Mencionada en múltiples fuentes del PDF.
+    """
+    if densidad <= 0:
+        return 0
+    # Fórmula de Siri (1961): % Grasa = ((4.95 / DC) - 4.5) * 100
+    porc_grasa = ((4.95 / densidad) - 4.5) * 100
+    
+    if porc_grasa < 0: porc_grasa = 0
+    if porc_grasa > 60: porc_grasa = 60 # Límite superior
+    return porc_grasa
+# --- FIN NUEVO ---
+
+
+# --- NUEVO: Función para calcular fórmulas del PDF ---
+def calcular_composicion_personalizada(formula_nombre, sexo, edad, peso, pliegues, diams, circs, talla_cm):
+    """
+    Calcula la Densidad Corporal (DC) y % Grasa (Siri) usando una fórmula seleccionada del PDF [formula.pdf].
+    Retorna un diccionario con los resultados, o (None, error_msg) si falla.
+    """
+    dc = 0.0
+    # Obtener todos los pliegues requeridos
+    p_tri = pliegues.get('Tricipital', 0.0)
+    p_bic = pliegues.get('Bicipital', 0.0)
+    p_sub = pliegues.get('Subescapular', 0.0)
+    p_sup = pliegues.get('Suprailíaco', 0.0) # Usado para Cresta Iliaca
+    p_abd = pliegues.get('Abdominal', 0.0)
+    p_mus = pliegues.get('Muslo (frontal)', 0.0)
+    
+    try:
+        # --- Fórmulas para Varones ---
+        if formula_nombre == "Sloan (1967) - Varones" and sexo == 'Masculino':
+            # DC = 1.1043 - 0.001327(X1) - 0.001310(X2)
+            # X1 = pliegue del muslo frontal (mm), X2 = pliegue subescapular (mm)
+            if p_mus == 0 or p_sub == 0:
+                return None, "Faltan pliegues de Muslo Frontal o Subescapular."
+            dc = 1.1043 - (0.001327 * p_mus) - (0.001310 * p_sub)
+        
+        elif formula_nombre == "Wilmore & Behnke (1969) - Varones" and sexo == 'Masculino':
+            # DC = 1.08543 - 0.000886(X1) - 0.00040(X2)
+            # X1 = pliegue abdominal (mm), X2 = pliegue del muslo frontal (mm)
+            if p_abd == 0 or p_mus == 0:
+                return None, "Faltan pliegues Abdominal o Muslo Frontal."
+            dc = 1.08543 - (0.000886 * p_abd) - (0.00040 * p_mus)
+
+        elif formula_nombre == "Katch & McArdle (1973) - Varones" and sexo == 'Masculino':
+            # DC = 1.09655 - 0.00049 - 0.00103(X1) - 0.00056(X2) + 0.00054(X3)
+            # X1 = pliegue triccipital (mm), X2 = pliegue subescapular (mm), X3 = pliegue abdominal (mm)
+            if p_tri == 0 or p_sub == 0 or p_abd == 0:
+                return None, "Faltan pliegues Triccipital, Subescapular o Abdominal."
+            # Nota: El PDF tiene un '-0.00049' suelto, que parece ser un término constante
+            dc = 1.09655 - 0.00049 - (0.00103 * p_tri) - (0.00056 * p_sub) + (0.00054 * p_abd)
+
+        # --- Fórmulas para Mujeres ---
+        elif formula_nombre == "Sloan, Burt, & Blyth (1962) - Mujeres" and sexo == 'Femenino':
+            # DC = 1.0764 - 0.00081(X1) - 0.00088(X2)
+            # X1 = pliegue de las cresta iliaca (mm), X2 = pliegue triccipital(mm)
+            if p_sup == 0 or p_tri == 0:
+                return None, "Faltan pliegues Suprailíaco (Cresta Iliaca) o Triccipital."
+            dc = 1.0764 - (0.00081 * p_sup) - (0.00088 * p_tri)
+
+        elif formula_nombre == "Wilmore & Behnke (1970) - Mujeres" and sexo == 'Femenino':
+            # DC = 1.06234 - 0.00068(X1) - 0.00039(X2) - 0.00025(X3)
+            # X1 = pliegue subescapular (mm), X2 = pliegue triccipital, X3 = pliegue del muslo frontal (mm)
+            if p_sub == 0 or p_tri == 0 or p_mus == 0:
+                return None, "Faltan pliegues Subescapular, Triccipital o Muslo Frontal."
+            dc = 1.06234 - (0.00068 * p_sub) - (0.00039 * p_tri) - (0.00025 * p_mus)
+        
+        elif formula_nombre == "Jackson, Pollock, & Ward (1980) - Mujeres" and sexo == 'Femenino':
+            # DC = 1.221389 - 0.04057(log10(X2)) - 0.00016(X3)
+            # X2 = Suma 3 pliegues (triceps, muslo frontal, cresta iliaca), X3 = edad (años)
+            if p_tri == 0 or p_mus == 0 or p_sup == 0:
+                return None, "Faltan pliegues Triccipital, Muslo Frontal o Suprailíaco."
+            suma_3_pliegues = p_tri + p_mus + p_sup
+            if suma_3_pliegues <= 0:
+                return None, "La suma de pliegues no puede ser cero."
+            log_suma = np.log10(suma_3_pliegues)
+            dc = 1.221389 - (0.04057 * log_suma) - (0.00016 * edad)
+
+        else:
+            return None, "La fórmula seleccionada no es compatible con el sexo del paciente o no es válida."
+
+        if dc <= 0:
+            return None, "Cálculo de Densidad inválido (<= 0)."
+
+        # Calcular % Grasa (Siri)
+        porc_grasa = calcular_porcentaje_grasa_siri(dc)
+        masa_grasa = peso * (porc_grasa / 100)
+        masa_magra = peso - masa_grasa
+        
+        return {
+            'formula_usada': formula_nombre,
+            'dc': dc,
+            'porc_grasa': porc_grasa,
+            'masa_grasa': masa_grasa,
+            'masa_magra': masa_magra
+        }, None
+
+    except Exception as e:
+        return None, f"Error matemático en el cálculo: {e}. Revise los pliegues."
+# --- FIN NUEVO ---
+
+
+# --- FUNCIÓN 2C (Durnin-Siri con Edad) ---
 def calcular_composicion_2c_durnin_siri(peso, sexo, edad, pliegues):
     """
     Calcula la composición corporal (2 Componentes: Grasa, Magra) 
@@ -266,14 +372,11 @@ def calcular_composicion_2c_durnin_siri(peso, sexo, edad, pliegues):
     # Esta es la función get_densidad_durnin que ya tenías
     densidad = get_densidad_durnin(sexo, edad, L) 
     
-    # Fórmula de Siri (1961) para % Grasa
-    if densidad <= 0:
-        return {'masa_grasa': 0, 'masa_magra': 0, 'porc_grasa': 0, 'diag_grasa': "Error en cálculo de densidad"}
-
-    porc_grasa = ((4.95 / densidad) - 4.5) * 100
+    # --- MODIFICADO: Usa la nueva función helper de Siri ---
+    porc_grasa = calcular_porcentaje_grasa_siri(densidad)
     
-    if porc_grasa < 0: porc_grasa = 0
-    if porc_grasa > 60: porc_grasa = 60 # Límite
+    if porc_grasa == 0 and densidad <= 0:
+         return {'masa_grasa': 0, 'masa_magra': 0, 'porc_grasa': 0, 'diag_grasa': "Error en cálculo de densidad"}
     
     masa_grasa = peso * (porc_grasa / 100)
     masa_magra = peso - masa_grasa
@@ -297,34 +400,87 @@ def calcular_composicion_2c_durnin_siri(peso, sexo, edad, pliegues):
         'diag_grasa': diagnostico
     }
 
-# --- NUEVA FUNCIÓN (5C) ---
-def calcular_composicion_5c_kerr(peso, talla_cm, sexo, edad, raza, pliegues, circs, diams):
+
+# --- NUEVA FUNCIÓN DE DIAGNÓSTICO 5C ---
+def obtener_diagnostico_5c(componente, porc_valor, sexo):
     """
-    Calcula el modelo de 5 componentes (ISAK - Kerr, 1988).
-    MG (Durnin/Siri), MM (Lee), MO (Rocha), MR (fijo), MP (diferencia).
+    Proporciona un diagnóstico simple para un componente del modelo 5C 
+    basado en su porcentaje y el sexo.
+    """
+    diagnostico = "N/A"
+    
+    if componente == 'MG': # Masa Grasa
+        if sexo == 'Masculino':
+            if porc_valor < 8: diagnostico = "Muy Bajo (Esencial)"
+            elif porc_valor <= 15: diagnostico = "Bajo (Atleta)"
+            elif porc_valor <= 22: diagnostico = "Saludable"
+            elif porc_valor <= 28: diagnostico = "Elevado"
+            else: diagnostico = "Muy Elevado"
+        else: # Femenino
+            if porc_valor < 15: diagnostico = "Muy Bajo (Esencial)"
+            elif porc_valor <= 22: diagnostico = "Bajo (Atleta)"
+            elif porc_valor <= 30: diagnostico = "Saludable"
+            elif porc_valor <= 38: diagnostico = "Elevado"
+            else: diagnostico = "Muy Elevado"
+            
+    elif componente == 'MM': # Masa Muscular
+        if sexo == 'Masculino':
+            if porc_valor < 38: diagnostico = "Bajo"
+            elif porc_valor <= 44: diagnostico = "Promedio"
+            elif porc_valor <= 50: diagnostico = "Alto (Atlético)"
+            else: diagnostico = "Muy Alto (Hipertrofia)"
+        else: # Femenino
+            if porc_valor < 30: diagnostico = "Bajo"
+            elif porc_valor <= 36: diagnostico = "Promedio"
+            elif porc_valor <= 42: diagnostico = "Alto (Atlético)"
+            else: diagnostico = "Muy Alto (Hipertrofia)"
+
+    elif componente == 'MO': # Masa Ósea
+        # Valores de referencia generales (Kerr)
+        if 12 <= porc_valor <= 15: diagnostico = "Promedio (Robusto)"
+        elif porc_valor < 12: diagnostico = "Ligero"
+        else: diagnostico = "Muy Robusto"
+        
+    elif componente == 'MR': # Masa Residual
+        diagnostico = "Componente fijo (Órganos)"
+    elif componente == 'MP': # Masa Piel
+        diagnostico = "Componente fijo"
+        
+    return diagnostico
+# --- FIN NUEVA FUNCIÓN ---
+
+
+# --- FUNCIÓN 5C (CORREGIDA CON FÓRMULA DE ROCHA 1975) ---
+def calcular_composicion_5c_kerr(peso, talla_cm, sexo, pliegues, diams):
+    """
+    Calcula el modelo de 5 componentes (ISAK - Kerr, 1988)
+    Utiliza:
+    1. MG (Durnin/Siri) - (Pliegues Durnin)
+    2. MO (Rocha, 1975) - *FÓRMULA CORREGIDA*
+    3. MR (Fijo 24%/21%) - (Peso)
+    4. MP (Fijo 3.5%) - (Peso)
+    5. MM (Por diferencia)
     """
     
     # --- 0. Valores iniciales y conversiones ---
-    H = talla_cm / 100.0
-    sexo_num = 1 if sexo == 'Masculino' else 0
+    H_m = talla_cm / 100.0 # Talla en metros
     
-    if raza == 'Asiático':
-        raza_val = 1.2
-    elif raza == 'Africano':
-        raza_val = 1.4
-    else: # Caucásico
-        raza_val = 0.0
-
-    # Default dict para retornar en caso de error
-    default_return = {
-        'mg': 0, 'mm': 0, 'mo': 0, 'mr': 0, 'mp': 0,
-        'porc_grasa_siri': 0, 'porc_grasa_brozek': 0, 'dc': 0, 'error': "Datos insuficientes"
+    # Default dict para retornar
+    resultados = {
+        'mg_kg': 0, 'mg_porc': 0, 'mg_diag': 'N/A',
+        'mo_kg': 0, 'mo_porc': 0, 'mo_diag': 'N/A',
+        'mr_kg': 0, 'mr_porc': 0, 'mr_diag': 'N/A',
+        'mp_kg': 0, 'mp_porc': 0, 'mp_diag': 'N/A',
+        'mm_kg': 0, 'mm_porc': 0, 'mm_diag': 'N/A',
+        'dc': 0, 'error': None, 'suma_total': 0
     }
 
-    if H <= 0 or peso <= 0:
-        return default_return
+    if H_m <= 0 or peso <= 0:
+        resultados['error'] = "Peso o Talla deben ser mayores a 0."
+        return resultados
 
     # --- 1. Masa Grasa (MG) ---
+    # (Usando Durnin 4 pliegues (sin edad) + Siri)
     p_tri = pliegues.get('Tricipital', 0.0)
     p_sub = pliegues.get('Subescapular', 0.0)
     p_bic = pliegues.get('Bicipital', 0.0)
@@ -333,84 +489,100 @@ def calcular_composicion_5c_kerr(peso, talla_cm, sexo, edad, raza, pliegues, cir
     suma_4_pliegues = p_tri + p_sub + p_bic + p_sup
     
     if suma_4_pliegues <= 0:
-        return {**default_return, 'error': "Pliegues para DC (Durnin) no ingresados."}
+        resultados['error'] = "Pliegues para DC (Durnin) no ingresados."
+        return resultados
 
     log_suma = np.log10(suma_4_pliegues)
     
     # Fórmulas de Densidad de Durnin (1974) (sin edad, como pide ISAK)
+    # Estas son las fórmulas de tu PDF
     if sexo == 'Masculino':
-        DC = 1.1765 - (0.0744 * log_suma)
+        DC = 1.1765 - (0.0744 * log_suma) #
     else: # Femenino
-        DC = 1.1567 - (0.0717 * log_suma)
+        DC = 1.1567 - (0.0717 * log_suma) #
 
     if DC <= 0:
-        return {**default_return, 'error': "Error en cálculo de Densidad Corporal."}
+        resultados['error'] = "Error en cálculo de Densidad Corporal."
+        return resultados
 
-    # %GC (Siri y Brozek)
-    porc_grasa_siri = (495.0 / DC) - 450.0
-    porc_grasa_brozek = (457.0 / DC) - 414.2
+    # --- MODIFICADO: Usa la nueva función helper de Siri ---
+    porc_grasa_siri = calcular_porcentaje_grasa_siri(DC)
     
-    # Usamos Siri para la Masa Grasa
     masa_grasa = (porc_grasa_siri / 100.0) * peso
-
-    # --- 2. Masa Muscular (MM) - Lee et al. (2000) ---
-    p_muslo_f = pliegues.get('Muslo (frontal)', 0.0)
-    p_pant = pliegues.get('Pantorrilla Medial', 0.0)
     
-    c_brazo = circs.get('Brazo (relajado)', 0.0)
-    c_muslo = circs.get('Muslo (medial)', 0.0)
-    c_pant = circs.get('Pantorrilla (máxima)', 0.0)
+    resultados['dc'] = DC
+    resultados['mg_kg'] = masa_grasa
+    resultados['mg_porc'] = porc_grasa_siri
+    resultados['mg_diag'] = obtener_diagnostico_5c('MG', porc_grasa_siri, sexo)
 
-    # Circunferencias corregidas (cm)
-    c_brazo_corr = c_brazo - (np.pi * (p_tri / 10.0))
-    c_muslo_corr = c_muslo - (np.pi * (p_muslo_f / 10.0))
-    c_pant_corr = c_pant - (np.pi * (p_pant / 10.0))
 
-    masa_muscular = 0
-    if c_brazo_corr > 0 and c_muslo_corr > 0 and c_pant_corr > 0:
-        term1 = 0.00744 * (c_brazo_corr**2 / H)
-        term2 = 0.00088 * (c_muslo_corr**2 / H)
-        term3 = 0.00441 * (c_pant_corr**2 / H)
+    # --- 2. Masa Ósea (MO) - Rocha (1975) (Fórmula CORREGIDA) ---
+    # MO = 3.02 * ( (Talla_m^2 * Diam_Muñeca_m * Diam_Femur_m * 400) )^(0.712)
+    
+    # Obtener diámetros en CM
+    d_muñeca_cm = diams.get('Muñeca (bi-estiloideo)', 0.0)
+    d_femur_cm = diams.get('Fémur (bi-condilar)', 0.0)
+    
+    if d_muñeca_cm <= 0 or d_femur_cm <= 0:
+        resultados['error'] = "Diámetros de Muñeca y Fémur (Rocha) no ingresados."
+        return resultados
         
-        masa_muscular = (H**2 * (term1 + term2 + term3)) + (2.4 * sexo_num) - (0.048 * edad) + raza_val + 7.8
-    else:
-        return {**default_return, 'error': "Circunferencias o pliegues para Masa Muscular (Lee) no ingresados."}
-
-    # --- 3. Masa Ósea (MO) - Rocha (1975) ---
-    d_muñeca = diams.get('Muñeca (bi-estiloideo)', 0.0)
-    d_femur = diams.get('Fémur (bi-condilar)', 0.0)
+    # Convertir diámetros a Metros para la fórmula
+    d_muñeca_m = d_muñeca_cm / 100.0
+    d_femur_m = d_femur_cm / 100.0
     
-    masa_osea = 0
-    if d_muñeca > 0 and d_femur > 0:
-        # Implementando la fórmula exactamente como se proporcionó
-        masa_osea = 3.02 * ( (H**2) * (d_muñeca + d_femur) * 400.0 / 1000.0 )
-    else:
-        return {**default_return, 'error': "Diámetros para Masa Ósea (Rocha) no ingresados."}
+    # Aplicar la fórmula de Rocha
+    termino_base = (H_m ** 2) * d_muñeca_m * d_femur_m * 400
+    if termino_base <= 0: # Evitar error de log/potencia
+        resultados['error'] = "Error en cálculo de MO (base negativa)."
+        return resultados
+        
+    masa_osea = 3.02 * (termino_base ** 0.712)
+    porc_oseo = (masa_osea / peso) * 100.0
+    
+    resultados['mo_kg'] = masa_osea
+    resultados['mo_porc'] = porc_oseo
+    resultados['mo_diag'] = obtener_diagnostico_5c('MO', porc_oseo, sexo)
 
-
-    # --- 4. Masa Residual (MR) ---
+    # --- 3. Masa Residual (MR) (Fijo 24% H / 21% M) ---
     if sexo == 'Masculino':
-        masa_residual = 0.241 * peso
+        porc_residual = 24.0
     else: # Femenino
-        masa_residual = 0.209 * peso
+        porc_residual = 21.0
+        
+    masa_residual = (porc_residual / 100.0) * peso
+    
+    resultados['mr_kg'] = masa_residual
+    resultados['mr_porc'] = porc_residual
+    resultados['mr_diag'] = obtener_diagnostico_5c('MR', porc_residual, sexo)
 
-    # --- 5. Masa de Piel (MP) ---
-    masa_piel = peso - (masa_grasa + masa_muscular + masa_osea + masa_residual)
-    # La piel no puede ser negativa, si lo es, es un error de medición
-    if masa_piel < 0: masa_piel = 0 
+    # --- 4. Masa de Piel (MP) (Fijo 3.5%) ---
+    porc_piel = 3.5
+    masa_piel = (porc_piel / 100.0) * peso
+    
+    resultados['mp_kg'] = masa_piel
+    resultados['mp_porc'] = porc_piel
+    resultados['mp_diag'] = obtener_diagnostico_5c('MP', porc_piel, sexo)
 
-    return {
-        'mg': masa_grasa,
-        'mm': masa_muscular,
-        'mo': masa_osea,
-        'mr': masa_residual,
-        'mp': masa_piel,
-        'porc_grasa_siri': porc_grasa_siri,
-        'porc_grasa_brozek': porc_grasa_brozek,
-        'dc': DC,
-        'error': None
-    }
-# --- FIN FUNCIONES 5C ---
+    # --- 5. Masa Muscular (MM) (Por diferencia) ---
+    suma_componentes_fijos = masa_grasa + masa_osea + masa_residual + masa_piel
+    masa_muscular = peso - suma_componentes_fijos
+    
+    if masa_muscular < 0:
+        masa_muscular = 0 # Error en mediciones si esto ocurre
+        # Asignar el error que viste
+        resultados['error'] = "Error: La suma de MG, MO, MR y MP supera el peso total. Revise las mediciones."
+
+    porc_muscular = (masa_muscular / peso) * 100.0
+    
+    resultados['mm_kg'] = masa_muscular
+    resultados['mm_porc'] = porc_muscular
+    resultados['mm_diag'] = obtener_diagnostico_5c('MM', porc_muscular, sexo)
+
+    resultados['suma_total'] = suma_componentes_fijos + masa_muscular
+
+    return resultados
+# --- FIN FUNCIÓN 5C (CORREGIDA) ---
 
 
 def calcular_somatotipo(peso, talla_cm, pliegues, circs, diams):
@@ -497,7 +669,7 @@ def clasificar_somatotipo(endo, meso, ecto):
         else:
             return f"{d1_nombre} (dominante)" # Ejs: 6-3-1, 5-3-1
 
-# --- NUEVA FUNCIÓN DE EXPLICACIÓN ---
+# --- FUNCIÓN DE EXPLICACIÓN ---
 def obtener_explicacion_somatotipo(clasificacion):
     """
     Retorna una breve explicación para una clasificación de somatotipo dada.
@@ -517,7 +689,7 @@ def obtener_explicacion_somatotipo(clasificacion):
     }
     # Retorna la explicación o un texto por defecto si no se encuentra
     return explicaciones.get(clasificacion, "No se pudo generar una explicación para esta clasificación.")
-# --- FIN NUEVA FUNCIÓN ---
+# --- FIN FUNCIÓN ---
 
 def crear_grafico_somatotipo(endo, meso, ecto):
     """
@@ -765,7 +937,7 @@ def generar_excel_dieta(df_dieta, df_resumen_comidas, df_macros):
         
     return output.getvalue()
 
-# --- FUNCIÓN DE EXPORTACIÓN (ACTUALIZADA) ---
+# --- FUNCIÓN DE EXPORTACIÓN (ACTUALIZADA con Modelo 5C) ---
 @st.cache_data
 def generar_excel_composicion(paciente_data):
     """
@@ -833,21 +1005,43 @@ def generar_excel_composicion(paciente_data):
             df_diams.columns = ['Diametro', 'Valor (cm)']
             df_diams.to_excel(writer, sheet_name='Medidas_Diametros', index=False)
             
-            # --- NUEVA HOJA: COMPOSICIÓN 5C ---
+            # --- MODIFICACIÓN HOJA: COMPOSICIÓN 5C ---
             if 'modelo_5c' in comp: # LEER DESDE NUEVA ESTRUCTURA
                 kerr = comp['modelo_5c']
-                kerr_info = {
-                    'Métrica': [
-                        'Densidad Corporal (ISAK)', '% Grasa (Siri)', '% Grasa (Brozek)',
-                        'Masa Grasa (MG) (kg)', 'Masa Muscular (MM) (kg)', 'Masa Ósea (MO) (kg)',
-                        'Masa Residual (MR) (kg)', 'Masa de Piel (MP) (kg)', 'Error'
-                    ],
-                    'Valor': [
-                        f"{kerr.get('dc', 0):.4f}", f"{kerr.get('porc_grasa_siri', 0):.1f}%", f"{kerr.get('porc_grasa_brozek', 0):.1f}%",
-                        f"{kerr.get('mg', 0):.2f}", f"{kerr.get('mm', 0):.2f}", f"{kerr.get('mo', 0):.2f}",
-                        f"{kerr.get('mr', 0):.2f}", f"{kerr.get('mp', 0):.2f}", str(kerr.get('error', 'N/A'))
-                    ]
-                }
+                
+                if kerr.get('error'):
+                    # Si hubo un error, solo reportar el error
+                    kerr_info = {'Error': [kerr['error']]}
+                else:
+                    # Si tuvo éxito, reportar la tabla completa
+                    kerr_info = {
+                        'Componente': [
+                            "Masa Grasa (MG)", "Masa Muscular (MM)", "Masa Ósea (MO)",
+                            "Masa Residual (MR)", "Masa de Piel (MP)", "SUMA TOTAL"
+                        ],
+                        'Masa (kg)': [
+                            f"{kerr.get('mg_kg', 0):.2f}", f"{kerr.get('mm_kg', 0):.2f}", 
+                            f"{kerr.get('mo_kg', 0):.2f}", f"{kerr.get('mr_kg', 0):.2f}",
+                            f"{kerr.get('mp_kg', 0):.2f}", f"{kerr.get('suma_total', 0):.2f}"
+                        ],
+                        '% Corporal': [
+                            f"{kerr.get('mg_porc', 0):.1f}%", f"{kerr.get('mm_porc', 0):.1f}%",
+                            f"{kerr.get('mo_porc', 0):.1f}%", f"{kerr.get('mr_porc', 0):.1f}%",
+                            f"{kerr.get('mp_porc', 0):.1f}%", "100.0%"
+                        ],
+                        'Diagnóstico': [
+                            kerr.get('mg_diag', 'N/A'), kerr.get('mm_diag', 'N/A'),
+                            kerr.get('mo_diag', 'N/A'), kerr.get('mr_diag', 'N/A'),
+                            kerr.get('mp_diag', 'N/A'), "---"
+                        ],
+                        'Otros Datos': [
+                            f"Densidad (Durnin): {kerr.get('dc', 0):.4f}",
+                            f"Peso Paciente: {pa['peso']:.2f} kg",
+                            f"Error (Suma vs Peso): {kerr.get('suma_total', 0) - pa['peso']:.2f} kg",
+                            "", "", ""
+                        ]
+                    }
+                
                 df_kerr = pd.DataFrame(kerr_info)
                 df_kerr.to_excel(writer, sheet_name='Composicion_5C_Kerr', index=False)
 
@@ -859,6 +1053,7 @@ def generar_excel_composicion(paciente_data):
         return None
             
     return output.getvalue()
+    
 # --- FIN DE FUNCIÓN DE EXPORTACIÓN ---
 
 
@@ -867,7 +1062,7 @@ def generar_excel_composicion(paciente_data):
 # --- PÁGINA DE INICIO (MODIFICADA) ---
 def mostrar_pagina_inicio():
     """Página principal para cargar, seleccionar y registrar pacientes."""
-    st.title(f"Gestión de Pacientes 🧑‍⚕️ (Usuario: {st.session_state.usuario})")
+    st.title(f"Gestión de Pacientes 🧑‍⚕️ ({st.session_state.usuario})")
     
     st.session_state.db_alimentos = cargar_base_de_datos_alimentos()
 
@@ -1008,7 +1203,7 @@ def mostrar_pagina_inicio():
                 col1.metric("IMC", f"{imc:.2f}", diagnostico_imc)
                 col2.metric("GET (Gasto Energético Total)", f"{get:.0f} kcal/día")
 
-# --- PÁGINA DE ANTROPOMETRÍA (MODIFICADA) ---
+# --- PÁGINA DE ANTROPOMETRÍA (MODIFICADA con nueva lógica 5C y Tabs) ---
 def mostrar_pagina_antropometria():
     """Página para registrar pliegues, circunferencias, diámetros y ver composición corporal."""
     st.title("Evaluación Antropométrica 📐")
@@ -1032,11 +1227,10 @@ def mostrar_pagina_antropometria():
         pliegues['Subescapular'] = col3.number_input("Subescapular", min_value=0.0, value=pliegues.get('Subescapular', 0.0), step=0.1, format="%.1f")
         
         col1, col2, col3 = st.columns(3)
-        pliegues['Suprailíaco'] = col1.number_input("Suprailíaco", min_value=0.0, value=pliegues.get('Suprailíaco', 0.0), step=0.1, format="%.1f")
+        pliegues['Suprailíaco'] = col1.number_input("Suprailíaco (Cresta Iliaca)", min_value=0.0, value=pliegues.get('Suprailíaco', 0.0), step=0.1, format="%.1f")
         pliegues['Abdominal'] = col2.number_input("Abdominal", min_value=0.0, value=pliegues.get('Abdominal', 0.0), step=0.1, format="%.1f")
         pliegues['Pantorrilla Medial'] = col3.number_input("Pantorrilla Medial", min_value=0.0, value=pliegues.get('Pantorrilla Medial', 0.0), step=0.1, format="%.1f")
         
-        # --- NUEVO PLIEGUE ---
         col1, col2, col3 = st.columns(3)
         pliegues['Muslo (frontal)'] = col1.number_input("Muslo (frontal)", min_value=0.0, value=pliegues.get('Muslo (frontal)', 0.0), step=0.1, format="%.1f")
 
@@ -1046,7 +1240,6 @@ def mostrar_pagina_antropometria():
         col1, col2, col3 = st.columns(3)
         circs['Brazo (relajado)'] = col1.number_input("Brazo (relajado)", min_value=0.0, value=circs.get('Brazo (relajado)', 0.0), step=0.1, format="%.1f")
         circs['Pantorrilla (máxima)'] = col2.number_input("Pantorrilla (máxima)", min_value=0.0, value=circs.get('Pantorrilla (máxima)', 0.0), step=0.1, format="%.1f")
-        # --- NUEVA CIRCUNFERENCIA ---
         circs['Muslo (medial)'] = col3.number_input("Muslo (medial)", min_value=0.0, value=circs.get('Muslo (medial)', 0.0), step=0.1, format="%.1f")
         
         st.divider()
@@ -1054,18 +1247,13 @@ def mostrar_pagina_antropometria():
         col1, col2, col3 = st.columns(3)
         diams['Húmero (bi-epicondilar)'] = col1.number_input("Húmero (bi-epicondilar)", min_value=0.0, value=diams.get('Húmero (bi-epicondilar)', 0.0), step=0.1, format="%.1f")
         diams['Fémur (bi-condilar)'] = col2.number_input("Fémur (bi-condilar)", min_value=0.0, value=diams.get('Fémur (bi-condilar)', 0.0), step=0.1, format="%.1f")
-        # --- NUEVO DIÁMETRO ---
         diams['Muñeca (bi-estiloideo)'] = col3.number_input("Muñeca (bi-estiloideo)", min_value=0.0, value=diams.get('Muñeca (bi-estiloideo)', 0.0), step=0.1, format="%.1f")
         
         st.divider()
         
-        # --- SE QUITÓ EL SELECTBOX ---
-        
         submitted = st.form_submit_button("Calcular Composición y Somatotipo")
 
     if submitted:
-        # --- CÁLCULO ACTUALIZADO (INCONDICIONAL) ---
-        
         # 1. Calcular Somatotipo
         endo, meso, ecto = calcular_somatotipo(
             pa['peso'], pa['talla_cm'], pliegues, circs, diams
@@ -1078,15 +1266,15 @@ def mostrar_pagina_antropometria():
         )
         st.success("Modelo 2C (Durnin-Edad/Siri) calculado.")
 
-        # 3. Calcular Modelo 5C
+        # 3. Calcular Modelo 5C (Llamando a la NUEVA función)
         comp_5c = calcular_composicion_5c_kerr(
-            pa['peso'], pa['talla_cm'], pa['sexo'], pa['edad'], pa.get('raza', 'Caucásico'),
-            pliegues, circs, diams
+            pa['peso'], pa['talla_cm'], pa['sexo'],
+            pliegues, diams # Nota: Circs y Raza ya no son necesarios para esta versión
         )
         if comp_5c['error']:
             st.error(f"Error en cálculo 5C: {comp_5c['error']}")
         else:
-            st.success("Modelo 5C (ISAK/Kerr) calculado.")
+            st.success("Modelo 5C (Kerr - Fórmulas solicitadas) calculado.")
 
         # Guardar todos los datos en el paciente (Nueva estructura)
         pa['pliegues'] = pliegues
@@ -1095,7 +1283,7 @@ def mostrar_pagina_antropometria():
         
         pa['composicion'] = {
             'modelo_2c': comp_2c,
-            'modelo_5c': comp_5c,
+            'modelo_5c': comp_5c, # Guarda el nuevo diccionario de resultados
             'somatotipo': {
                 'endo': endo, 
                 'meso': meso, 
@@ -1115,7 +1303,6 @@ def mostrar_pagina_antropometria():
                 pa['get'] = nuevo_get
                 st.success(f"GET (Cunningham) recalculado con nueva masa magra: {nuevo_get:.0f} kcal")
 
-        # --- MODIFICADO: Guarda el paciente para el usuario logueado ---
         guardar_paciente(st.session_state.usuario, pa)
         st.session_state.paciente_actual = pa 
         
@@ -1125,23 +1312,59 @@ def mostrar_pagina_antropometria():
     # --- SECCIÓN DE RESULTADOS (ACTUALIZADA CON TABS) ---
     st.subheader("Diagnóstico Nutricional")
     
-    # Obtener los diccionarios de resultados para fácil acceso
     pa = st.session_state.paciente_actual
     comp = pa.get('composicion', {})
     comp_2c = comp.get('modelo_2c', {})
-    comp_5c = comp.get('modelo_5c', {})
+    comp_5c = comp.get('modelo_5c', {}) # Este es el nuevo diccionario
     som = comp.get('somatotipo', {})
+    paciente_sexo = pa.get('sexo', 'Masculino')
 
-    # Crear las pestañas (Tabs)
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "⚖️ Evaluación General", 
-        "🧍 Modelo 2C (Durnin-Edad/Siri)", 
-        "🔬 Modelo 5C (ISAK/Kerr)", 
-        "📊 Somatotipo (Heath-Carter)"
-    ])
+    # --- MODIFICADO: Lógica para crear pestañas dinámicamente ---
+    
+    # 1. Definir los nombres de las pestañas
+    tab_nombres = [
+        "⚖️ Evaluación General",
+        "🧍 Modelo 2C (Durnin-Edad/Siri)",
+        "🔬 Modelo 5C (Kerr - Modificado)",
+    ]
+    
+    # 2. Definir las fórmulas a agregar (clave=Nombre Tab, valor=Nombre para función)
+    # --- MODIFICACIÓN: Se agregan Emojis a los nombres de las pestañas ---
+    formulas_masculinas = {
+        "🧬 Sloan (1967)": "Sloan (1967) - Varones",
+        "🧫 Wilmore & Behnke (1969)": "Wilmore & Behnke (1969) - Varones",
+        "🔍 Katch & McArdle (1973)": "Katch & McArdle (1973) - Varones"
+    }
+    
+    formulas_femeninas = {
+        "🧬 Sloan et al. (1962)": "Sloan, Burt, & Blyth (1962) - Mujeres",
+        "🧫 Wilmore & Behnke (1970)": "Wilmore & Behnke (1970) - Mujeres",
+        "🔍 Jackson et al. (1980)": "Jackson, Pollock, & Ward (1980) - Mujeres"
+    }
+    # --- FIN MODIFICACIÓN ---
 
+    # 3. Elegir el diccionario correcto basado en el sexo
+    formulas_a_mostrar = {}
+    if paciente_sexo == 'Masculino':
+        formulas_a_mostrar = formulas_masculinas
+    else:
+        formulas_a_mostrar = formulas_femeninas
+
+    # 4. Agregar los nombres de las fórmulas a la lista de tabs
+    tab_nombres.extend(list(formulas_a_mostrar.keys()))
+    
+    # 5. Agregar Somatotipo AL FINAL
+    tab_nombres.append("📊 Somatotipo (Heath-Carter)")
+    
+    # 6. Crear las pestañas
+    # Desempaquetar la lista de nombres en variables de pestaña
+    tab_general, tab_2c, tab_5c, *tabs_formulas, tab_somatotipo = st.tabs(tab_nombres)
+
+    # --- FIN DE LA MODIFICACIÓN DE ESTRUCTURA DE TABS ---
+
+    
     # --- Tab 1: Evaluación General (IMC y GET) ---
-    with tab1:
+    with tab_general:
         st.markdown("##### Resumen de Indicadores Clave")
         col1, col2 = st.columns(2)
         
@@ -1159,7 +1382,7 @@ def mostrar_pagina_antropometria():
         )
 
     # --- Tab 2: Modelo 2C (Durnin-Edad/Siri) ---
-    with tab2:
+    with tab_2c:
         if comp_2c and comp_2c.get('porc_grasa', 0) > 0:
             st.markdown("##### Composición de 2 Componentes (Grasa vs. Magra)")
             st.metric(f"% Grasa Corporal: {comp_2c.get('porc_grasa', 0):.1f}%", comp_2c.get('diag_grasa', 'Sin datos'))
@@ -1174,46 +1397,123 @@ def mostrar_pagina_antropometria():
         else:
             st.info("No se han calculado datos para el Modelo 2C. Por favor, ingrese pliegues y presione 'Calcular'.")
 
-    # --- Tab 3: Modelo 5C (ISAK/Kerr) ---
-    with tab3:
+    # --- Tab 3: Modelo 5C ---
+    with tab_5c:
         if comp_5c:
             if comp_5c.get('error'):
                 st.warning(f"No se pudo calcular el modelo 5C: {comp_5c['error']}")
-                st.info("Este modelo requiere todos los pliegues, circunferencias y diámetros solicitados en el formulario.")
-            elif comp_5c.get('mg', 0) > 0 or comp_5c.get('mm', 0) > 0:
-                st.markdown("##### Composición de 5 Componentes (Modelo Kerr)")
-                st.caption("Análisis fraccionario de la masa corporal basado en protocolos ISAK.")
+                st.info("Este modelo requiere los pliegues de Durnin (4) y los diámetros de Húmero y Fémur.")
+            
+            elif comp_5c.get('mg_kg', 0) > 0 or comp_5c.get('mm_kg', 0) > 0:
+                st.markdown("##### Composición de 5 Componentes (Modelo Kerr - Solicitado)")
+                st.caption("Análisis fraccionario basado en De Rose & Kerr (MO), % fijos (MR, MP) y Durnin (MG).")
                 
-                # Sub-sección: % Grasa
-                st.markdown("###### Porcentaje de Grasa (Durnin-ISAK)")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Densidad Corporal", f"{comp_5c['dc']:.4f} g/cm³")
-                col2.metric("% Grasa (Siri)", f"{comp_5c['porc_grasa_siri']:.1f}%")
-                col3.metric("% Grasa (Brozek)", f"{comp_5c['porc_grasa_brozek']:.1f}%")
+                # Crear un DataFrame para la tabla de resumen
+                data_5c = {
+                    "Componente": ["Masa Grasa (MG)", "Masa Muscular (MM)", "Masa Ósea (MO)", "Masa Residual (MR)", "Masa de Piel (MP)"],
+                    "Masa (kg)": [
+                        comp_5c['mg_kg'], comp_5c['mm_kg'], comp_5c['mo_kg'], 
+                        comp_5c['mr_kg'], comp_5c['mp_kg']
+                    ],
+                    "% Corporal": [
+                        comp_5c['mg_porc'], comp_5c['mm_porc'], comp_5c['mo_porc'], 
+                        comp_5c['mr_porc'], comp_5c['mp_porc']
+                    ],
+                    "Diagnóstico": [
+                        comp_5c['mg_diag'], comp_5c['mm_diag'], comp_5c['mo_diag'], 
+                        comp_5c['mr_diag'], comp_5c['mp_diag']
+                    ]
+                }
+                df_5c = pd.DataFrame(data_5c)
                 
+                st.dataframe(df_5c.style.format({
+                    'Masa (kg)': '{:.2f}',
+                    '% Corporal': '{:.1f}%'
+                }), use_container_width=True)
+
                 st.divider()
                 
-                # Sub-sección: Masas
-                st.markdown("###### Masas Corporales Fraccionadas (kg)")
+                # Resumen de totales y densidad
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Masa Grasa (MG)", f"{comp_5c['mg']:.2f} kg", help="Fórmula Durnin-ISAK/Siri")
-                col2.metric("Masa Muscular (MM)", f"{comp_5c['mm']:.2f} kg", help="Fórmula Lee et al.")
-                col3.metric("Masa Ósea (MO)", f"{comp_5c['mo']:.2f} kg", help="Fórmula Rocha")
+                col1.metric("Peso Total (Paciente)", f"{pa['peso']:.2f} kg")
+                col2.metric("Suma de Componentes", f"{comp_5c.get('suma_total', 0):.2f} kg", 
+                            delta=f"{comp_5c.get('suma_total', 0) - pa['peso']:.2f} kg de diferencia")
+                col3.metric("Densidad Corporal (Durnin)", f"{comp_5c.get('dc', 0):.4f} g/cm³")
                 
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Masa Residual (MR)", f"{comp_5c['mr']:.2f} kg", help="Valor fijo por sexo")
-                col2.metric("Masa de Piel (MP)", f"{comp_5c['mp']:.2f} kg", help="Calculada por diferencia")
-                
-                suma_comp = comp_5c['mg'] + comp_5c['mm'] + comp_5c['mo'] + comp_5c['mr'] + comp_5c['mp']
-                col3.metric("Suma Componentes", f"{suma_comp:.2f} kg", 
-                             f"Diferencia vs Peso: {pa['peso'] - suma_comp:.2f} kg")
             else:
                  st.info("No se han calculado datos para el Modelo 5C. Por favor, ingrese todas las medidas y presione 'Calcular'.")
         else:
             st.info("No se han calculado datos para el Modelo 5C. Por favor, ingrese todas las medidas y presione 'Calcular'.")
 
-    # --- Tab 4: Somatotipo (Heath-Carter) ---
-    with tab4:
+    # --- NUEVO: Lógica para las pestañas de fórmulas dinámicas ---
+    # Iterar sobre los objetos de pestaña (tabs_formulas) y los nombres de fórmula (formulas_a_mostrar)
+    
+    for tab, (nombre_corto_con_emoji, nombre_largo_funcion) in zip(tabs_formulas, formulas_a_mostrar.items()):
+        with tab:
+            # Extraer solo el nombre sin emoji para el título, o usar el completo
+            # Usaremos el completo ya que la pestaña ya tiene el emoji
+            st.markdown(f"##### Cálculo de Composición: {nombre_corto_con_emoji.split(' ', 1)[-1]}")
+            st.caption(f"Referencia: {nombre_largo_funcion}")
+            
+            # Llamar a la función de cálculo
+            resultado, error = calcular_composicion_personalizada(
+                nombre_largo_funcion,
+                pa['sexo'], pa['edad'], pa['peso'],
+                pa.get('pliegues', {}),
+                pa.get('diametros', {}),
+                pa.get('circunferencias', {}),
+                pa.get('talla_cm', 0)
+            )
+            
+            if error:
+                st.error(f"Error al calcular: {error}")
+                st.info("Asegúrese de haber ingresado los pliegues necesarios para esta fórmula en el formulario de arriba y haber presionado 'Calcular Composición' (esto guarda los pliegues para que esta pestaña pueda usarlos).")
+            elif resultado:
+                st.success(f"Resultados para: {nombre_corto_con_emoji.split(' ', 1)[-1]}")
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Densidad Corporal (DC)", f"{resultado['dc']:.4f} g/cm³")
+                col2.metric("% Grasa (Siri)", f"{resultado['porc_grasa']:.1f} %")
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Masa Grasa", f"{resultado['masa_grasa']:.1f} kg")
+                col2.metric("Masa Magra", f"{resultado['masa_magra']:.1f} kg")
+
+                # Mostrar los pliegues usados (para transparencia)
+                with st.expander("Detalles de la fórmula y pliegues utilizados"):
+                    if "Sloan (1967)" in nombre_largo_funcion:
+                        st.write("`DC = 1.1043 - 0.001327(Muslo Frontal) - 0.001310(Subescapular)`")
+                        st.write(f"- Pliegue Muslo (frontal): {pa.get('pliegues', {}).get('Muslo (frontal)', 0.0)} mm")
+                        st.write(f"- Pliegue Subescapular: {pa.get('pliegues', {}).get('Subescapular', 0.0)} mm")
+                    elif "Wilmore & Behnke (1969)" in nombre_largo_funcion:
+                        st.write("`DC = 1.08543 - 0.000886(Abdominal) - 0.00040(Muslo Frontal)`")
+                        st.write(f"- Pliegue Abdominal: {pa.get('pliegues', {}).get('Abdominal', 0.0)} mm")
+                        st.write(f"- Pliegue Muslo (frontal): {pa.get('pliegues', {}).get('Muslo (frontal)', 0.0)} mm")
+                    elif "Katch & McArdle (1973)" in nombre_largo_funcion:
+                        st.write("`DC = 1.09655 - 0.00049 - 0.00103(Triccipital) - 0.00056(Subescapular) + 0.00054(Abdominal)`")
+                        st.write(f"- Pliegue Tricipital: {pa.get('pliegues', {}).get('Tricipital', 0.0)} mm")
+                        st.write(f"- Pliegue Subescapular: {pa.get('pliegues', {}).get('Subescapular', 0.0)} mm")
+                        st.write(f"- Pliegue Abdominal: {pa.get('pliegues', {}).get('Abdominal', 0.0)} mm")
+                    elif "Sloan, Burt, & Blyth (1962)" in nombre_largo_funcion:
+                        st.write("`DC = 1.0764 - 0.00081(Cresta Iliaca) - 0.00088(Triccipital)`")
+                        st.write(f"- Pliegue Suprailíaco (Cresta Iliaca): {pa.get('pliegues', {}).get('Suprailíaco', 0.0)} mm")
+                        st.write(f"- Pliegue Tricipital: {pa.get('pliegues', {}).get('Tricipital', 0.0)} mm")
+                    elif "Wilmore & Behnke (1970)" in nombre_largo_funcion:
+                        st.write("`DC = 1.06234 - 0.00068(Subescapular) - 0.00039(Triccipital) - 0.00025(Muslo Frontal)`")
+                        st.write(f"- Pliegue Subescapular: {pa.get('pliegues', {}).get('Subescapular', 0.0)} mm")
+                        st.write(f"- Pliegue Tricipital: {pa.get('pliegues', {}).get('Tricipital', 0.0)} mm")
+                        st.write(f"- Pliegue Muslo (frontal): {pa.get('pliegues', {}).get('Muslo (frontal)', 0.0)} mm")
+                    elif "Jackson, Pollock, & Ward (1980)" in nombre_largo_funcion:
+                        st.write("`DC = 1.221389 - 0.04057(log10(Suma 3 Pliegues)) - 0.00016(Edad)`")
+                        st.write(f"- Pliegue Tricipital: {pa.get('pliegues', {}).get('Tricipital', 0.0)} mm")
+                        st.write(f"- Pliegue Muslo (frontal): {pa.get('pliegues', {}).get('Muslo (frontal)', 0.0)} mm")
+                        st.write(f"- Pliegue Suprailíaco (Cresta Iliaca): {pa.get('pliegues', {}).get('Suprailíaco', 0.0)} mm")
+                        st.write(f"- Edad: {pa.get('edad', 0)} años")
+    # --- FIN DE LA NUEVA LÓGICA DE TABS ---
+
+
+    # --- Tab Final: Somatotipo (Heath-Carter) ---
+    with tab_somatotipo:
         if som and som.get('endo', 0) > 0:
             st.markdown("##### Clasificación de la Forma Corporal (Heath-Carter)")
             col1, col2 = st.columns([1, 2])
@@ -1247,6 +1547,9 @@ def mostrar_pagina_antropometria():
                 st.plotly_chart(fig_somato, use_container_width=True)
         else:
             st.info("No se han calculado datos para el Somatotipo. Por favor, ingrese las medidas necesarias y presione 'Calcular'.")
+
+    # --- FIN DE LA PÁGINA DE ANTROPOMETRÍA ---
+
 
 # --- PÁGINA DE CREAR DIETA (MODIFICADA) ---
 def mostrar_pagina_crear_dieta():
@@ -1814,9 +2117,9 @@ def main():
     else:
         mostrar_app_principal()
 
+    # --- Footer (Se mostrará en todas las páginas) ---
+    st.divider() # <-- NUEVO: Agrega una línea horizontal
+    st.caption("© 2025 - Creado por IDLB. Todos los derechos reservados.") # <-- NUEVO
+
 if __name__ == "__main__":
-
     main()
-
-
-
