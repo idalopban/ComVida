@@ -8,29 +8,12 @@ import numpy as np # Importado para cálculos matemáticos
 import bcrypt # Importado para hashear contraseñas
 import sys # Importado para compatibilidad de rutas de archivos
 
-# --- Configuración de la Página (CON TEMA DE COLOR MODIFICADO) ---
+# --- Configuración de la Página ---
 st.set_page_config(
     page_title="ComVida",
     page_icon="🍏",
     layout="wide",
-    initial_sidebar_state="expanded",
-    
-    # --- ¡AQUÍ ESTÁ EL TEMA NUEVO! ---
-    theme={
-        # Color primario para botones (type="primary")
-        "primaryColor": "#005C63", # Azul petróleo
-        
-        # Color del fondo principal de la app
-        "backgroundColor": "#FFFFFF", # Blanco puro
-        
-        # Color de fondo de la barra lateral y widgets
-        "secondaryBackgroundColor": "#EAEAEA", # Gris claro
-        
-        # Color del texto principal
-        "textColor": "#0C0C0C", 
-        
-        "font": "sans serif"
-    }
+    initial_sidebar_state="expanded"
 )
 
 # --- Constantes y Variables Globales ---
@@ -539,7 +522,6 @@ def obtener_explicacion_somatotipo(clasificacion):
 def crear_grafico_somatotipo(endo, meso, ecto):
     """
     Genera un gráfico de Plotly (Somatocarta) para el somatotipo dado.
-    (CON COLORES MODIFICADOS)
     """
     
     # Calcular coordenadas X, Y de Heath-Carter
@@ -563,10 +545,8 @@ def crear_grafico_somatotipo(endo, meso, ecto):
         x=boundary_x,
         y=boundary_y,
         fill="toself",
-        # --- MODIFICADO: Relleno con tu Gris claro (rgb(234, 234, 234)) ---
-        fillcolor='rgba(234, 234, 234, 0.5)', # #EAEAEA con 50% opacidad
-        # --- MODIFICADO: Borde con tu Azul petróleo ---
-        line=dict(color='#005C63', width=1), 
+        fillcolor='rgba(230, 230, 230, 0.5)',
+        line=dict(color='black', width=1),
         name='Somatocarta'
     ))
 
@@ -587,13 +567,7 @@ def crear_grafico_somatotipo(endo, meso, ecto):
         x=[x],
         y=[y],
         mode='markers',
-        marker=dict(
-            # --- MODIFICADO: Punto del paciente con Coral suave ---
-            color='#FF8A65', 
-            size=12, 
-            # --- MODIFICADO: Borde del punto con Azul petróleo ---
-            line=dict(color='#005C63', width=1)
-        ),
+        marker=dict(color='red', size=12, line=dict(color='black', width=1)),
         name='Paciente'
     ))
 
@@ -1453,10 +1427,7 @@ def mostrar_pagina_crear_dieta():
         # --- FIN MODIFICACIÓN ---
 
 def mostrar_pagina_resumen_dieta():
-    """
-    Página para ver los totales de la dieta, gráficos y adecuación.
-    (GRÁFICO DE PASTEL CON COLORES MODIFICADOS)
-    """
+    """Página para ver los totales de la dieta, gráficos y adecuación."""
     st.title("Resumen de Dieta y Adecuación 📊")
     
     if not st.session_state.paciente_actual:
@@ -1535,13 +1506,7 @@ def mostrar_pagina_resumen_dieta():
             textinfo='label+percent', 
             insidetextorientation='radial',
             pull=[0.05, 0.05, 0.05],
-            
-            # --- ¡AQUÍ ESTÁN TUS COLORES! ---
-            marker_colors=[
-                '#005C63', # Azul petróleo (Proteínas)
-                '#FF8A65', # Coral suave (Grasas)
-                '#A8E063'  # Verde lima (Carbohidratos)
-            ]
+            marker_colors=['#007bff', '#dc3545', '#ffc107']
         )])
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
@@ -1741,25 +1706,16 @@ def mostrar_pagina_login():
 
 # --- Lógica Principal (Main App Router) ---
 def mostrar_app_principal():
-    """
-    Muestra la aplicación principal (barra lateral y páginas) después de iniciar sesión.
-    (LOGO PLACEHOLDER MODIFICADO)
-    """
+    """Muestra la aplicación principal (barra lateral y páginas) después de iniciar sesión."""
     
     # --- Barra Lateral (Sidebar) ---
     
-    # --- MODIFICACIÓN: Lógica del Logo (CON COLOR MODIFICADO) ---
+    # --- MODIFICACIÓN: Lógica del Logo ---
     if os.path.exists(LOGO_PATH):
         st.sidebar.image(LOGO_PATH, use_container_width=True)
     else:
         # Mostrar un placeholder si logo.png no se encuentra
-        # --- MODIFICADO: Colores en la URL del placeholder ---
-        # Antes: 007bff/FFFFFF
-        # Ahora: 005C63/FFFFFF (Azul petróleo / Blanco puro)
-        st.sidebar.image(
-            "https://placehold.co/400x100/005C63/FFFFFF?text=ComVida&font=inter", 
-            use_container_width=True
-        )
+        st.sidebar.image("https://placehold.co/400x100/007bff/FFFFFF?text=ComVida&font=inter", use_container_width=True)
         st.sidebar.caption("Reemplaza esta imagen creando un archivo 'logo.png'.")
     # --- FIN MODIFICACIÓN ---
 
