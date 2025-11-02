@@ -11,7 +11,7 @@ import sys # Importado para compatibilidad de rutas de archivos
 # --- Configuración de la Página ---
 st.set_page_config(
     page_title="ComVida",
-    page_icon="🍏",
+    page_icon="🍋",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -1815,4 +1815,5 @@ def main():
         mostrar_app_principal()
 
 if __name__ == "__main__":
+
     main()
