@@ -1,0 +1,19 @@
+# Este es el archivo .streamlit/config.toml
+
+[theme]
+
+# Color primario (Azul petróleo)
+# Afecta a botones (type="primary"), sliders, y elementos activos.
+primaryColor = "#005C63"
+
+# Fondo principal de la app (Blanco puro)
+backgroundColor = "#FFFFFF"
+
+# Fondo de la barra lateral (Gris claro)
+secondaryBackgroundColor = "#EAEAEA"
+
+# Color del texto (Usaremos un negro estándar para legibilidad)
+textColor = "#0C0C0C"
+
+# Fuente
+font = "sans serif"
