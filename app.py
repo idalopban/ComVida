@@ -1679,7 +1679,7 @@ def mostrar_pagina_login():
             st.image(LOGO_PATH, use_container_width=True)
             st.title("Bienvenido")
         else:
-            st.title("ComVida 🍏")
+            st.title("ComVida 🍋‍🟩")
             st.caption("Bienvenido a su asistente nutricional")
 
         st.markdown("---")
@@ -1817,5 +1817,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
