@@ -1677,7 +1677,7 @@ def mostrar_pagina_login():
         # Mostrar el logo si existe, si no, el título
         if os.path.exists(LOGO_PATH):
             st.image(LOGO_PATH, use_container_width=True)
-            st.title("Bienvenido a ComVida")
+            st.title("Bienvenido")
         else:
             st.title("ComVida 🍏")
             st.caption("Bienvenido a su asistente nutricional")
@@ -1817,4 +1817,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
