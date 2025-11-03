@@ -165,7 +165,7 @@ def configurar_modelo_gemini():
         
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        modelo = genai.GenerativeModel('gemini-1.5-pro') 
+        modelo = genai.GenerativeModel('gemini-2.5-pro') 
         return modelo
     except Exception as e:
         st.error(f"Error al configurar el modelo Gemini: {e}")
@@ -2236,4 +2236,5 @@ def main():
     st.caption("© 2025 - Creado por IDLB. Todos los derechos reservados.") 
 
 if __name__ == "__main__":
+
     main()
