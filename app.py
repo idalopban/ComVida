@@ -11,7 +11,7 @@ import sys # Importado para compatibilidad de rutas de archivos
 # --- Configuración de la Página ---
 st.set_page_config(
     page_title="ComVida",
-    page_icon="🍋‍🟩",
+    page_icon="🥕",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -2122,4 +2122,5 @@ def main():
     st.caption("© 2025 - Creado por IDLB. Todos los derechos reservados.") # <-- NUEVO
 
 if __name__ == "__main__":
+
     main()
