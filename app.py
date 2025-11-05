@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import json
+import tempfile
 import plotly.graph_objects as go
 from io import BytesIO
 import numpy as np # Importado para cálculos matemáticos
@@ -14,6 +15,15 @@ import traceback # Para un mejor manejo de errores
 # Importación específica para manejar los filtros de seguridad
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 # --- FIN NUEVAS IMPORTACIONES ---
+
+# --- NUEVAS IMPORTACIONES PARA PDF ---
+from datetime import datetime # Para la fecha en el PDF
+from fpdf import FPDF # Para generar el PDF
+import plotly.io as pio
+
+
+# --- FIN NUEVAS IMPORTACIONES ---
+
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -165,7 +175,7 @@ def configurar_modelo_gemini():
         
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        modelo = genai.GenerativeModel('gemini-2.5-pro') 
+        modelo = genai.GenerativeModel('gemini-1.5-pro-latest') 
         return modelo
     except Exception as e:
         st.error(f"Error al configurar el modelo Gemini: {e}")
@@ -180,6 +190,7 @@ def generar_respuesta_gemini(modelo, prompt):
         return "Error: El modelo de IA no está configurado."
         
     try:
+        # Configuración de seguridad ajustada
         safety_settings = {
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
@@ -200,6 +211,7 @@ def generar_respuesta_gemini(modelo, prompt):
             safety_settings=safety_settings 
         )
         
+        # Manejo de respuesta bloqueada (más robusto)
         if not respuesta.parts:
             razon_bloqueo = "Razón desconocida"
             if respuesta.candidates and respuesta.candidates[0].finish_reason:
@@ -325,7 +337,7 @@ def calcular_porcentaje_grasa_siri(densidad):
     porc_grasa = ((4.95 / densidad) - 4.5) * 100
     
     if porc_grasa < 0: porc_grasa = 0
-    if porc_grasa > 60: porc_grasa = 60 
+    if porc_grasa > 60: porc_grasa = 60 # Límite superior razonable
     return porc_grasa
 
 
@@ -784,11 +796,13 @@ def cargar_paciente(username, nombre_archivo):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             datos_paciente = json.load(f)
+            # Asegurar que las claves principales existan
             datos_paciente.setdefault('pliegues', {})
             datos_paciente.setdefault('circunferencias', {}) 
             datos_paciente.setdefault('diametros', {}) 
             datos_paciente.setdefault('composicion', {})
             datos_paciente.setdefault('dieta_actual', [])
+            datos_paciente.setdefault('plan_semanal', {}) # <-- NUEVA LÍNEA
             return datos_paciente
     except Exception as e:
         st.error(f"Error al cargar el paciente {nombre_archivo}: {e}")
@@ -866,6 +880,7 @@ def generar_excel_dieta(df_dieta, df_resumen_comidas, df_macros):
             
             df_macros.to_excel(writer, sheet_name='Adecuacion_Macros')
 
+            # --- Generar pestañas individuales por tiempo de comida ---
             tiempos_de_comida_orden = [
                 "Desayuno", "Colación Mañana", "Almuerzo", 
                 "Colación Tarde", "Cena", "Colación Noche"
@@ -1013,7 +1028,756 @@ def generar_excel_composicion(paciente_data):
             
     return output.getvalue()
 
-# --- NUEVAS FUNCIONES HELPER PARA EDICIÓN DE DIETA (Puestas aquí para organización) ---
+# --- NUEVAS FUNCIONES PARA EXPORTAR PLAN SEMANAL ---
+
+class PDFPlan(FPDF):
+    """
+    Clase personalizada para generar el PDF con encabezado y pie de página.
+    """
+    def __init__(self, paciente_nombre, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.paciente_nombre = paciente_nombre
+        self.fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+        
+    def header(self):
+        # Logo (si existe)
+        if os.path.exists(LOGO_PATH):
+            self.image(LOGO_PATH, 10, 8, 33)
+        
+        # Título
+        self.set_font('Arial', 'B', 15)
+        self.cell(80) # Mover a la derecha
+        self.cell(30, 10, 'Plan de Alimentación Semanal', 0, 0, 'C')
+        
+        # Info del Paciente (Subtítulo)
+        self.set_font('Arial', '', 12)
+        self.ln(10) # Salto de línea
+        self.cell(80)
+        self.cell(30, 10, f"Paciente: {self.paciente_nombre}", 0, 0, 'C')
+        
+        # Fecha
+        self.set_font('Arial', '', 10)
+        self.ln(5)
+        self.cell(80)
+        self.cell(30, 10, f"Fecha de Generación: {self.fecha_hoy}", 0, 0, 'C')
+        
+        # Salto de línea final del encabezado
+        self.ln(20)
+
+    def footer(self):
+        self.set_y(-15) # Posición a 1.5 cm del final
+        self.set_font('Arial', 'I', 8)
+        # Número de página
+        self.cell(0, 10, 'Página ' + str(self.page_no()) + '/{nb}', 0, 0, 'C')
+
+def generar_pdf_composicion(paciente_data):
+    """
+    Genera un informe PDF completo de Composición Corporal,
+    incluyendo el gráfico de Somatocarta.
+    (Versión robusta con Archivo Temporal)
+    """
+    pa = paciente_data
+    pdf = PDFComposicion(pa.get('nombre', 'N/A'))
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    
+    # --- PÁGINA 1: RESUMEN GENERAL ---
+    pdf.draw_section_title("Resumen General")
+    pdf.draw_metric("Nombre", pa.get('nombre', 'N/A'))
+    pdf.draw_metric("Edad", pa.get('edad', 0), "años")
+    pdf.draw_metric("Sexo", pa.get('sexo', 'N/A'))
+    pdf.draw_metric("Peso", f"{pa.get('peso', 0):.1f}", "kg")
+    pdf.draw_metric("Talla", f"{pa.get('talla_cm', 0):.1f}", "cm")
+    pdf.ln(5)
+
+    pdf.draw_section_title("Indicadores Clave")
+    imc = pa.get('imc', 0)
+    pdf.draw_metric("IMC", f"{imc:.2f}", f"({pa.get('diagnostico_imc', 'N/A')})")
+    pdf.draw_metric("GET (Gasto Energético)", f"{pa.get('get', 0):.0f}", f"kcal/día ({pa.get('formula_get', 'N/A')})")
+    pdf.ln(5)
+    
+    # Gráfico de IMC
+    if imc > 0:
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, 'Clasificación Visual de IMC', 0, 1, 'L')
+        pdf.draw_imc_gauge(imc)
+        pdf.ln(5)
+
+    # --- PÁGINA 2: COMPOSICIÓN CORPORAL ---
+    pdf.add_page()
+    pdf.draw_section_title("Análisis de Composición Corporal")
+    
+    comp = pa.get('composicion', {})
+    
+    # Modelo 2C (Durnin-Edad/Siri)
+    comp_2c = comp.get('modelo_2c', {})
+    if comp_2c and comp_2c.get('porc_grasa', 0) > 0:
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Modelo 2 Componentes (Durnin-Edad/Siri)", 0, 1, 'L')
+        pdf.draw_metric("% Grasa Corporal", f"{comp_2c.get('porc_grasa', 0):.1f}%", f"({comp_2c.get('diag_grasa', 'N/A')})")
+        pdf.draw_metric("Masa Grasa", f"{comp_2c.get('masa_grasa', 0):.1f}", "kg")
+        pdf.draw_metric("Masa Magra", f"{comp_2c.get('masa_magra', 0):.1f}", "kg")
+        
+        # Gráfico 2C
+        porc_magra = 100.0 - comp_2c.get('porc_grasa', 0)
+        pdf.draw_composition_bar({
+            'MG': comp_2c.get('porc_grasa', 0),
+            'Magra': porc_magra
+        }, pa.get('peso', 0))
+    else:
+        pdf.set_font('Arial', 'I', 10)
+        pdf.cell(0, 10, "Datos del Modelo 2C no calculados.", 0, 1, 'L')
+    
+    pdf.ln(5)
+
+    # Modelo 5C (Kerr)
+    comp_5c = comp.get('modelo_5c', {})
+    if comp_5c and not comp_5c.get('error'):
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Modelo 5 Componentes (Kerr - Modificado)", 0, 1, 'L')
+        
+        # Gráfico 5C
+        percentages_5c = {
+            'MG': comp_5c.get('mg_porc', 0),
+            'MM': comp_5c.get('mm_porc', 0),
+            'MO': comp_5c.get('mo_porc', 0),
+            'MR': comp_5c.get('mr_porc', 0),
+            'MP': comp_5c.get('mp_porc', 0)
+        }
+        pdf.draw_composition_bar(percentages_5c, pa.get('peso', 0))
+        pdf.ln(3)
+
+        # Tabla 5C (Encabezado)
+        pdf.set_font('Arial', 'B', 10)
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(40, 7, "Componente", 1, 0, 'C', fill=True)
+        pdf.cell(30, 7, "Masa (kg)", 1, 0, 'C', fill=True)
+        pdf.cell(30, 7, "% Corporal", 1, 0, 'C', fill=True)
+        pdf.cell(0, 7, "Diagnóstico", 1, 1, 'C', fill=True)
+        
+        pdf.set_font('Arial', '', 10)
+        
+        # Filas de la tabla
+        def add_row(comp, kg, porc, diag):
+            pdf.cell(40, 7, comp, 1, 0, 'L')
+            pdf.cell(30, 7, f"{kg:.2f}", 1, 0, 'R')
+            pdf.cell(30, 7, f"{porc:.1f}%", 1, 0, 'R')
+            pdf.cell(0, 7, diag, 1, 1, 'L')
+
+        add_row("Masa Grasa (MG)", comp_5c.get('mg_kg', 0), comp_5c.get('mg_porc', 0), comp_5c.get('mg_diag', 'N/A'))
+        add_row("Masa Muscular (MM)", comp_5c.get('mm_kg', 0), comp_5c.get('mm_porc', 0), comp_5c.get('mm_diag', 'N/A'))
+        add_row("Masa Ósea (MO)", comp_5c.get('mo_kg', 0), comp_5c.get('mo_porc', 0), comp_5c.get('mo_diag', 'N/A'))
+        add_row("Masa Residual (MR)", comp_5c.get('mr_kg', 0), comp_5c.get('mr_porc', 0), comp_5c.get('mr_diag', 'N/A'))
+        add_row("Masa de Piel (MP)", comp_5c.get('mp_kg', 0), comp_5c.get('mp_porc', 0), comp_5c.get('mp_diag', 'N/A'))
+        
+        # Fila Total
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(40, 7, "SUMA TOTAL", 1, 0, 'L')
+        pdf.cell(30, 7, f"{comp_5c.get('suma_total', 0):.2f}", 1, 0, 'R')
+        pdf.cell(30, 7, "100.0%", 1, 0, 'R')
+        pdf.cell(0, 7, f"Dif. vs Peso: {comp_5c.get('suma_total', 0) - pa.get('peso', 0):.2f} kg", 1, 1, 'L')
+        
+    else:
+        pdf.set_font('Arial', 'I', 10)
+        pdf.cell(0, 10, f"Datos del Modelo 5C no calculados. ({comp_5c.get('error', '')})", 0, 1, 'L')
+
+    # --- PÁGINA 3: SOMATOTIPO (CON GRÁFICO) ---
+    pdf.add_page()
+    pdf.draw_section_title("Somatotipo (Heath-Carter)")
+    
+    # Recargamos 'comp' y 'som' por si acaso, aunque ya debería estar en 'pa'
+    comp = pa.get('composicion', {})
+    som = comp.get('somatotipo', {})
+    
+    # --- ¡ESTA LÍNEA ES DIFERENTE! ---
+    if som and som.get('endo', 0) > 0:
+        pdf.draw_metric("Endomorfia", f"{som.get('endo', 0):.1f}", "(Adiposidad relativa)")
+        pdf.draw_metric("Mesomorfia", f"{som.get('meso', 0):.1f}", "(Robustez músculo-esquelética)")
+        pdf.draw_metric("Ectomorfia", f"{som.get('ecto', 0):.1f}", "(Linealidad relativa)")
+        pdf.ln(3)
+        
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, f"Clasificación: {som.get('clasificacion', 'N/A')}", 0, 1, 'L')
+        
+        pdf.set_font('Arial', '', 11)
+        explicacion = obtener_explicacion_somatotipo(som.get('clasificacion', 'N/A'))
+        pdf.multi_cell(0, 6, f"{explicacion}")
+        pdf.ln(5)
+        
+        # --- INICIO: ESTRATEGIA DE ARCHIVO TEMPORAL ---
+        temp_file_path = None
+        try:
+            fig_somato = crear_grafico_somatotipo(
+                som.get('endo', 0), 
+                som.get('meso', 0), 
+                som.get('ecto', 0)
+            )
+            
+            # 1. Crear un archivo temporal
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+                temp_file_path = temp_file.name
+                # 2. Guardar la imagen de Plotly en el archivo
+                pio.write_image(fig_somato, temp_file_path, width=500, height=500, scale=1.5)
+
+            # 3. Insertar la imagen en el PDF desde la RUTA DEL ARCHIVO
+            if temp_file_path and os.path.exists(temp_file_path):
+                img_width_mm = 120 
+                img_x_pos = (210 - img_width_mm) / 2
+                current_y = pdf.get_y()
+                # Leemos la imagen desde la ruta del archivo
+                pdf.image(temp_file_path, x=img_x_pos, y=current_y, w=img_width_mm, type='PNG')
+                pdf.ln(img_width_mm + 5)
+            else:
+                raise Exception("No se pudo crear el archivo temporal de la imagen.")
+        
+        except Exception as e:
+            # Si esto falla, AHORA SÍ veremos el error
+            print("--- ¡ERROR AL GENERAR GRÁFICO PDF (Estrategia TempFile)! ---")
+            traceback.print_exc()
+            print("--------------------------------------")
+            pdf.set_font('Arial', 'I', 9)
+            pdf.set_text_color(128)
+            pdf.multi_cell(0, 5, f"Nota: No se pudo generar el gráfico. (Error: {e}).\n"
+                                  "Revise la terminal.")
+        finally:
+            # 4. Limpiar el archivo temporal sin importar lo que pase
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        # --- FIN: ESTRATEGIA DE ARCHIVO TEMPORAL ---
+            
+    else:
+        pdf.set_font('Arial', 'I', 10)
+        pdf.cell(0, 10, "Datos de Somatotipo no calculados.", 0, 1, 'L')
+
+    return bytes(pdf.output(dest='S'))
+
+class PDFDietaDetallada(FPDF):
+    """
+    Clase personalizada para generar el PDF de la Dieta Detallada (1 Día).
+    """
+    def __init__(self, paciente_nombre, get_objetivo, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.paciente_nombre = paciente_nombre
+        self.get_objetivo = get_objetivo
+        self.fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+        self.colores = { 'gris_claro': (236, 240, 241), 'gris_oscuro': (44, 62, 80) }
+
+    def header(self):
+        if os.path.exists(LOGO_PATH):
+            self.image(LOGO_PATH, 10, 8, 33)
+        self.set_font('Arial', 'B', 15)
+        self.cell(80)
+        self.cell(30, 10, 'Dieta Detallada (1 Día)', 0, 0, 'C')
+        self.ln(10)
+        self.set_font('Arial', '', 12)
+        self.cell(80)
+        self.cell(30, 10, f"Paciente: {self.paciente_nombre}", 0, 0, 'C')
+        self.ln(5)
+        self.set_font('Arial', '', 10)
+        self.cell(80)
+        self.cell(30, 10, f"GET Objetivo: {self.get_objetivo:.0f} kcal", 0, 0, 'C')
+        self.ln(20)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, 'Página ' + str(self.page_no()) + '/{nb}', 0, 0, 'C')
+
+    def draw_section_title(self, title):
+        self.set_font('Arial', 'B', 14)
+        self.set_fill_color(*self.colores['gris_claro'])
+        self.set_text_color(*self.colores['gris_oscuro'])
+        self.cell(0, 10, f" {title}", 0, 1, 'L', fill=True)
+        self.ln(4)
+    
+    def draw_macro_table(self, df_macros):
+        self.set_font('Arial', 'B', 10)
+        self.set_fill_color(240, 240, 240)
+        
+        # Encabezado
+        self.cell(40, 7, "Macro", 1, 0, 'C', fill=True)
+        self.cell(50, 7, "Actual (g)", 1, 0, 'C', fill=True)
+        self.cell(50, 7, "Objetivo (g)", 1, 0, 'C', fill=True)
+        self.cell(50, 7, "Diferencia (g)", 1, 1, 'C', fill=True)
+        
+        self.set_font('Arial', '', 10)
+        
+        # Transponer el dataframe para iterar
+        df_macros_t = df_macros.transpose()
+        
+        for macro, row in df_macros_t.iterrows():
+            self.cell(40, 7, macro, 1, 0, 'L')
+            self.cell(50, 7, f"{row['Actual (g)']:.1f}", 1, 0, 'R')
+            self.cell(50, 7, f"{row['Objetivo (g)']:.1f}", 1, 0, 'R')
+            self.cell(50, 7, f"{row['Diferencia (g)']:.1f}", 1, 1, 'R')
+        self.ln(5)
+
+    def draw_detailed_diet(self, df_dieta):
+        tiempos_comida_orden = ["Desayuno", "Colación Mañana", "Almuerzo", "Colación Tarde", "Cena", "Colación Noche"]
+        cols_display = ['Alimento', 'Gramos', 'Kcal', 'Proteínas', 'Grasas', 'Carbohidratos']
+        
+        if 'Tiempo Comida' not in df_dieta.columns:
+            self.cell(0, 10, "No hay datos de dieta.", 0, 1)
+            return
+        
+        df_dieta['Tiempo Comida'] = pd.Categorical(df_dieta['Tiempo Comida'], categories=tiempos_comida_orden, ordered=True)
+        df_dieta = df_dieta.sort_values('Tiempo Comida')
+        grupos = df_dieta.groupby('Tiempo Comida', observed=True)
+        
+        for tiempo in tiempos_comida_orden:
+            if tiempo in grupos.groups:
+                df_tiempo = grupos.get_group(tiempo)
+                
+                self.set_font('Arial', 'B', 12)
+                self.cell(0, 8, f"--- {tiempo} ---", 0, 1, 'L')
+                
+                # Encabezado de la mini-tabla
+                self.set_font('Arial', 'B', 9)
+                self.set_fill_color(245, 245, 245)
+                self.cell(80, 6, "Alimento", 1, 0, 'L', fill=True) # Más ancho para Alimento
+                self.cell(20, 6, "Gramos", 1, 0, 'R', fill=True)
+                self.cell(20, 6, "Kcal", 1, 0, 'R', fill=True)
+                self.cell(20, 6, "Prot(g)", 1, 0, 'R', fill=True)
+                self.cell(20, 6, "Gras(g)", 1, 0, 'R', fill=True)
+                self.cell(20, 6, "Carb(g)", 1, 1, 'R', fill=True)
+                
+                self.set_font('Arial', '', 9)
+                
+                for _, item in df_tiempo.iterrows():
+                    # MultiCell para Alimento por si es largo
+                    y_before = self.get_y()
+                    self.multi_cell(80, 6, str(item['Alimento']), 1, 'L')
+                    y_after = self.get_y()
+                    x_after = self.get_x()
+                    # Volver a la misma línea
+                    self.set_xy(x_after + 80, y_before)
+                    
+                    cell_height = y_after - y_before
+                    self.cell(20, cell_height, f"{item['Gramos']:.0f}", 1, 0, 'R')
+                    self.cell(20, cell_height, f"{item['Kcal']:.0f}", 1, 0, 'R')
+                    self.cell(20, cell_height, f"{item['Proteínas']:.1f}", 1, 0, 'R')
+                    self.cell(20, cell_height, f"{item['Grasas']:.1f}", 1, 0, 'R')
+                    self.cell(20, cell_height, f"{item['Carbohidratos']:.1f}", 1, 1, 'R')
+
+                # Totales del tiempo de comida
+                self.set_font('Arial', 'B', 9)
+                self.cell(80, 6, "Total", 1, 0, 'R')
+                self.cell(20, 6, f"{df_tiempo['Gramos'].sum():.0f}", 1, 0, 'R')
+                self.cell(20, 6, f"{df_tiempo['Kcal'].sum():.0f}", 1, 0, 'R')
+                self.cell(20, 6, f"{df_tiempo['Proteínas'].sum():.1f}", 1, 0, 'R')
+                self.cell(20, 6, f"{df_tiempo['Grasas'].sum():.1f}", 1, 0, 'R')
+                self.cell(20, 6, f"{df_tiempo['Carbohidratos'].sum():.1f}", 1, 1, 'R')
+                
+                self.ln(5)
+
+def generar_pdf_dieta_detallada(paciente, df_dieta, df_macros, df_resumen_comidas, total_kcal):
+    """
+    Genera un informe PDF completo de la Dieta Detallada.
+    """
+    pdf = PDFDietaDetallada(paciente.get('nombre', 'N/A'), paciente.get('get', 0))
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    
+    # --- Totales y Adecuación ---
+    pdf.draw_section_title("Resumen de Macronutrientes")
+    
+    # Totales Kcal
+    adecuacion = 0.0
+    if paciente.get('get', 0) > 0:
+        adecuacion = (total_kcal / paciente.get('get', 0)) * 100
+        
+    pdf.set_font('Arial', 'B', 12)
+    pdf.cell(95, 10, f"Kcal Totales: {total_kcal:.0f} kcal", 1, 0, 'C')
+    pdf.cell(95, 10, f"Adecuación GET: {adecuacion:.1f} %", 1, 1, 'C')
+    pdf.ln(5)
+    
+    # Tabla de Macros
+    pdf.draw_macro_table(df_macros)
+    
+    # --- Dieta Detallada por Tiempo ---
+    pdf.draw_section_title("Alimentos por Tiempo de Comida")
+    pdf.draw_detailed_diet(df_dieta)
+    
+    # --- Página 2: Resumen por Comidas y Micros ---
+    if pdf.get_y() > 200: # Evitar que el resumen de micros quede cortado
+        pdf.add_page()
+    else:
+        pdf.ln(10)
+
+    pdf.draw_section_title("Resumen por Tiempo de Comida")
+    
+    # Encabezado
+    pdf.set_font('Arial', 'B', 10)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(50, 7, "Tiempo Comida", 1, 0, 'L', fill=True)
+    pdf.cell(35, 7, "Kcal", 1, 0, 'R', fill=True)
+    pdf.cell(35, 7, "Proteínas (g)", 1, 0, 'R', fill=True)
+    pdf.cell(35, 7, "Grasas (g)", 1, 0, 'R', fill=True)
+    pdf.cell(35, 7, "Carbs (g)", 1, 1, 'R', fill=True)
+    
+    pdf.set_font('Arial', '', 10)
+    for tiempo, row in df_resumen_comidas.iterrows():
+        pdf.cell(50, 7, tiempo, 1, 0, 'L')
+        pdf.cell(35, 7, f"{row['Kcal']:.0f}", 1, 0, 'R')
+        pdf.cell(35, 7, f"{row['Proteínas']:.1f}", 1, 0, 'R')
+        pdf.cell(35, 7, f"{row['Grasas']:.1f}", 1, 0, 'R')
+        pdf.cell(35, 7, f"{row['Carbohidratos']:.1f}", 1, 1, 'R')
+    
+    if pdf.get_y() > 200: # Evitar que el resumen de micros quede cortado
+        pdf.add_page()
+    else:
+        pdf.ln(10)
+    
+    # --- Micros ---
+    pdf.draw_section_title("Resumen de Micronutrientes")
+    
+    micros_cols = [
+        'Fibra', 'Agua', 'Calcio', 'Fósforo', 'Zinc', 'Hierro', 'Vitamina C', 
+        'Sodio', 'Potasio', 'Beta-Caroteno', 'Vitamina A', 'Tiamina', 
+        'Riboflavina', 'Niacina', 'Acido Folico'
+    ]
+    cols_presentes = [col for col in micros_cols if col in df_dieta.columns]
+    
+    if cols_presentes:
+        df_micros = df_dieta[cols_presentes].sum().reset_index()
+        df_micros.columns = ['Nutriente', 'Total']
+        df_micros = df_micros[df_micros['Total'] > 0]
+        
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(60, 7, "Nutriente", 1, 0, 'L', fill=True)
+        pdf.cell(40, 7, "Total", 1, 1, 'R', fill=True)
+        pdf.set_font('Arial', '', 10)
+        
+        for _, row in df_micros.iterrows():
+            if pdf.get_y() > 270:
+                pdf.add_page()
+                pdf.set_font('Arial', 'B', 10)
+                pdf.cell(60, 7, "Nutriente", 1, 0, 'L', fill=True)
+                pdf.cell(40, 7, "Total", 1, 1, 'R', fill=True)
+                pdf.set_font('Arial', '', 10)
+                
+            pdf.cell(60, 7, str(row['Nutriente']), 1, 0, 'L')
+            pdf.cell(40, 7, f"{row['Total']:.1f}", 1, 1, 'R')
+    
+    return bytes(pdf.output(dest='S'))
+# --- (REEMPLAZA ESTA CLASE COMPLETA) ---
+
+class PDFComposicion(FPDF):
+    """
+    Clase personalizada para generar el PDF de Composición Corporal
+    con gráficos y tablas.
+    """
+    def __init__(self, paciente_nombre, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.paciente_nombre = paciente_nombre
+        self.fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+        # Colores (R, G, B)
+        self.colores = {
+            'azul': (52, 152, 219),
+            'verde': (46, 204, 113),
+            'amarillo': (241, 196, 15),
+            'naranja': (230, 126, 34),
+            'rojo': (231, 76, 60),
+            'gris_claro': (236, 240, 241),
+            'gris_oscuro': (44, 62, 80),
+            'gris_medio': (149, 165, 166)
+        }
+        
+    def header(self):
+        # Logo (si existe)
+        if os.path.exists(LOGO_PATH):
+            self.image(LOGO_PATH, 10, 8, 33)
+        
+        # Título
+        self.set_font('Arial', 'B', 16)
+        self.set_text_color(*self.colores['gris_oscuro'])
+        self.cell(80) # Mover a la derecha
+        self.cell(30, 10, 'Evaluación de Composición Corporal', 0, 0, 'C')
+        
+        # Info del Paciente (Subtítulo)
+        self.set_font('Arial', '', 12)
+        self.ln(10)
+        self.cell(80)
+        self.cell(30, 10, f"Paciente: {self.paciente_nombre}", 0, 0, 'C')
+        
+        # Fecha
+        self.set_font('Arial', '', 10)
+        self.ln(5)
+        self.cell(80)
+        self.cell(30, 10, f"Fecha de Generación: {self.fecha_hoy}", 0, 0, 'C')
+        
+        self.ln(20)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.set_text_color(128)
+        self.cell(0, 10, 'Página ' + str(self.page_no()) + '/{nb}', 0, 0, 'C')
+
+    def draw_section_title(self, title):
+        """Dibuja un título de sección destacado."""
+        self.set_font('Arial', 'B', 14)
+        self.set_fill_color(*self.colores['gris_claro'])
+        self.set_text_color(*self.colores['gris_oscuro'])
+        self.cell(0, 10, f" {title}", 0, 1, 'L', fill=True)
+        self.ln(5)
+
+    def draw_metric(self, label, value, unit=""):
+        """Dibuja un par de etiqueta-valor (como una tabla de 2 columnas)."""
+        self.set_font('Arial', 'B', 11)
+        self.set_text_color(0)
+        self.cell(50, 8, label, 0, 0, 'L')
+        self.set_font('Arial', '', 11)
+        self.cell(0, 8, f": {value} {unit}", 0, 1, 'L')
+        self.ln(1)
+
+    def draw_imc_gauge(self, imc):
+        """Dibuja un medidor de IMC simple con FPDF."""
+        start_x = self.get_x() + 10
+        y = self.get_y()
+        max_width = 170 # Ancho total del medidor
+        
+        # Definir rangos y colores
+        rangos = [
+            (18.5, self.colores['azul']),   # Bajo Peso
+            (25.0, self.colores['verde']),  # Normal
+            (30.0, self.colores['amarillo']), # Sobrepeso
+            (40.0, self.colores['rojo'])    # Obesidad (límite 40)
+        ]
+        
+        # Dibujar las barras de color
+        self.set_line_width(0.5)
+        current_x = start_x
+        last_limit = 10 # Empezar a dibujar desde 10
+        
+        for limit, color in rangos:
+            self.set_fill_color(*color)
+            ancho_rango = ((limit - last_limit) / (40 - 10)) * max_width
+            self.rect(current_x, y, ancho_rango, 10, 'F')
+            current_x += ancho_rango
+            last_limit = limit
+
+        # Dibujar el marcador del paciente
+        if imc > 0 and imc <= 40:
+            imc_pos = start_x + (((imc - 10) / (40 - 10)) * max_width)
+            self.set_fill_color(*self.colores['gris_oscuro'])
+            
+            # --- ESTA ES LA SECCIÓN CORREGIDA ---
+            # Definir los 3 puntos del triángulo
+            points = [
+                (imc_pos - 3, y + 12),  # Punto inferior izquierdo
+                (imc_pos + 3, y + 12),  # Punto inferior derecho
+                (imc_pos, y + 17)       # Punto pico (hacia abajo)
+            ]
+            self.polygon(points, 'F') # Usar polygon() en lugar de triangle()
+            # --- FIN DE LA CORRECCIÓN ---
+
+            self.set_font('Arial', 'B', 10)
+            self.set_xy(imc_pos - 10, y + 18)
+            self.cell(20, 5, f"{imc:.1f}", 0, 0, 'C')
+
+        # Etiquetas
+        self.set_font('Arial', '', 9)
+        self.set_xy(start_x, y + 10)
+        self.cell(0, 5, "18.5", 0, 0, 'L')
+        self.set_xy(start_x + ((15 / 30) * max_width) - 5, y + 10)
+        self.cell(10, 5, "25.0", 0, 0, 'C')
+        self.set_xy(start_x + ((20 / 30) * max_width) - 5, y + 10)
+        self.cell(10, 5, "30.0", 0, 0, 'C')
+        self.set_xy(start_x + max_width - 10, y + 10)
+        self.cell(10, 5, "40.0+", 0, 0, 'R')
+        self.ln(18)
+
+    def draw_composition_bar(self, percentages_dict, total_kg):
+        """Dibuja una barra apilada de 100% para la composición."""
+        start_x = self.get_x() + 10
+        y = self.get_y()
+        max_width = 170
+        height = 12
+        
+        colores_comp = {
+            'MG': self.colores['rojo'],
+            'MM': self.colores['naranja'],
+            'MO': self.colores['gris_claro'],
+            'MR': self.colores['gris_medio'],
+            'MP': self.colores['azul'],
+            'Magra': self.colores['verde'] # Añadido para el gráfico 2C
+        }
+        
+        current_x = start_x
+        self.set_line_width(0.2)
+        
+        # Dibujar barra
+        for comp, porc in percentages_dict.items():
+            if porc > 0:
+                ancho = (porc / 100) * max_width
+                self.set_fill_color(*colores_comp.get(comp, (0,0,0)))
+                self.rect(current_x, y, ancho, height, 'F')
+                current_x += ancho
+        
+        # Borde negro
+        self.set_draw_color(0)
+        self.rect(start_x, y, max_width, height, 'D')
+        
+        # Leyenda
+        self.ln(height + 3)
+        self.set_font('Arial', '', 9)
+        legend_x = start_x
+        
+        for comp, porc in percentages_dict.items():
+            if porc > 0:
+                self.set_fill_color(*colores_comp.get(comp, (0,0,0)))
+                self.rect(legend_x, self.get_y(), 3, 3, 'F')
+                self.set_x(legend_x + 5)
+                self.cell(30, 4, f"{comp} ({porc:.1f}%)", 0, 0, 'L')
+                legend_x += 35
+                if legend_x > start_x + 140: # Siguiente línea de leyenda
+                    self.ln(4)
+                    legend_x = start_x
+        self.ln(5)
+
+# --- (FIN DE LA CLASE) ---
+
+
+def generar_pdf_composicion(paciente_data):
+    """
+    Genera un informe PDF completo de Composición Corporal.
+    """
+    pa = paciente_data
+    pdf = PDFComposicion(pa.get('nombre', 'N/A'))
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    
+    # --- PÁGINA 1: RESUMEN GENERAL ---
+    pdf.draw_section_title("Resumen General")
+    pdf.draw_metric("Nombre", pa.get('nombre', 'N/A'))
+    pdf.draw_metric("Edad", pa.get('edad', 0), "años")
+    pdf.draw_metric("Sexo", pa.get('sexo', 'N/A'))
+    pdf.draw_metric("Peso", f"{pa.get('peso', 0):.1f}", "kg")
+    pdf.draw_metric("Talla", f"{pa.get('talla_cm', 0):.1f}", "cm")
+    pdf.ln(5)
+
+    pdf.draw_section_title("Indicadores Clave")
+    imc = pa.get('imc', 0)
+    pdf.draw_metric("IMC", f"{imc:.2f}", f"({pa.get('diagnostico_imc', 'N/A')})")
+    pdf.draw_metric("GET (Gasto Energético)", f"{pa.get('get', 0):.0f}", f"kcal/día ({pa.get('formula_get', 'N/A')})")
+    pdf.ln(5)
+    
+    # Gráfico de IMC
+    if imc > 0:
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, 'Clasificación Visual de IMC', 0, 1, 'L')
+        pdf.draw_imc_gauge(imc)
+        pdf.ln(5)
+
+    # --- PÁGINA 2: COMPOSICIÓN CORPORAL ---
+    pdf.add_page()
+    pdf.draw_section_title("Análisis de Composición Corporal")
+    
+    comp = pa.get('composicion', {})
+    
+    # Modelo 2C (Durnin-Edad/Siri)
+    comp_2c = comp.get('modelo_2c', {})
+    if comp_2c and comp_2c.get('porc_grasa', 0) > 0:
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Modelo 2 Componentes (Durnin-Edad/Siri)", 0, 1, 'L')
+        pdf.draw_metric("% Grasa Corporal", f"{comp_2c.get('porc_grasa', 0):.1f}%", f"({comp_2c.get('diag_grasa', 'N/A')})")
+        pdf.draw_metric("Masa Grasa", f"{comp_2c.get('masa_grasa', 0):.1f}", "kg")
+        pdf.draw_metric("Masa Magra", f"{comp_2c.get('masa_magra', 0):.1f}", "kg")
+        
+        # Gráfico 2C
+        porc_magra = 100.0 - comp_2c.get('porc_grasa', 0)
+        pdf.draw_composition_bar({
+            'MG': comp_2c.get('porc_grasa', 0),
+            'Magra': porc_magra
+        }, pa.get('peso', 0))
+    else:
+        pdf.set_font('Arial', 'I', 10)
+        pdf.cell(0, 10, "Datos del Modelo 2C no calculados.", 0, 1, 'L')
+    
+    pdf.ln(5)
+
+    # Modelo 5C (Kerr)
+    comp_5c = comp.get('modelo_5c', {})
+    if comp_5c and not comp_5c.get('error'):
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "Modelo 5 Componentes (Kerr - Modificado)", 0, 1, 'L')
+        
+        # Gráfico 5C
+        percentages_5c = {
+            'MG': comp_5c.get('mg_porc', 0),
+            'MM': comp_5c.get('mm_porc', 0),
+            'MO': comp_5c.get('mo_porc', 0),
+            'MR': comp_5c.get('mr_porc', 0),
+            'MP': comp_5c.get('mp_porc', 0)
+        }
+        pdf.draw_composition_bar(percentages_5c, pa.get('peso', 0))
+        pdf.ln(3)
+
+        # Tabla 5C (Encabezado)
+        pdf.set_font('Arial', 'B', 10)
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(40, 7, "Componente", 1, 0, 'C', fill=True)
+        pdf.cell(30, 7, "Masa (kg)", 1, 0, 'C', fill=True)
+        pdf.cell(30, 7, "% Corporal", 1, 0, 'C', fill=True)
+        pdf.cell(0, 7, "Diagnóstico", 1, 1, 'C', fill=True)
+        
+        pdf.set_font('Arial', '', 10)
+        
+        # Filas de la tabla
+        def add_row(comp, kg, porc, diag):
+            pdf.cell(40, 7, comp, 1, 0, 'L')
+            pdf.cell(30, 7, f"{kg:.2f}", 1, 0, 'R')
+            pdf.cell(30, 7, f"{porc:.1f}%", 1, 0, 'R')
+            pdf.cell(0, 7, diag, 1, 1, 'L')
+
+        add_row("Masa Grasa (MG)", comp_5c.get('mg_kg', 0), comp_5c.get('mg_porc', 0), comp_5c.get('mg_diag', 'N/A'))
+        add_row("Masa Muscular (MM)", comp_5c.get('mm_kg', 0), comp_5c.get('mm_porc', 0), comp_5c.get('mm_diag', 'N/A'))
+        add_row("Masa Ósea (MO)", comp_5c.get('mo_kg', 0), comp_5c.get('mo_porc', 0), comp_5c.get('mo_diag', 'N/A'))
+        add_row("Masa Residual (MR)", comp_5c.get('mr_kg', 0), comp_5c.get('mr_porc', 0), comp_5c.get('mr_diag', 'N/A'))
+        add_row("Masa de Piel (MP)", comp_5c.get('mp_kg', 0), comp_5c.get('mp_porc', 0), comp_5c.get('mp_diag', 'N/A'))
+        
+        # Fila Total
+        pdf.set_font('Arial', 'B', 10)
+        pdf.cell(40, 7, "SUMA TOTAL", 1, 0, 'L')
+        pdf.cell(30, 7, f"{comp_5c.get('suma_total', 0):.2f}", 1, 0, 'R')
+        pdf.cell(30, 7, "100.0%", 1, 0, 'R')
+        pdf.cell(0, 7, f"Dif. vs Peso: {comp_5c.get('suma_total', 0) - pa.get('peso', 0):.2f} kg", 1, 1, 'L')
+        
+    else:
+        pdf.set_font('Arial', 'I', 10)
+        pdf.cell(0, 10, f"Datos del Modelo 5C no calculados. ({comp_5c.get('error', '')})", 0, 1, 'L')
+
+    # --- PÁGINA 3: SOMATOTIPO ---
+    pdf.add_page()
+    pdf.draw_section_title("Somatotipo (Heath-Carter)")
+    
+    som = comp.get('somatotipo', {})
+    if som:
+        pdf.draw_metric("Endomorfia", f"{som.get('endo', 0):.1f}", "(Adiposidad relativa)")
+        pdf.draw_metric("Mesomorfia", f"{som.get('meso', 0):.1f}", "(Robustez músculo-esquelética)")
+        pdf.draw_metric("Ectomorfia", f"{som.get('ecto', 0):.1f}", "(Linealidad relativa)")
+        pdf.ln(3)
+        
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, f"Clasificación: {som.get('clasificacion', 'N/A')}", 0, 1, 'L')
+        
+        pdf.set_font('Arial', '', 11)
+        explicacion = obtener_explicacion_somatotipo(som.get('clasificacion', 'N/A'))
+        pdf.multi_cell(0, 6, f"{explicacion}")
+        pdf.ln(5)
+        
+        pdf.set_font('Arial', 'I', 9)
+        pdf.set_text_color(128)
+        pdf.cell(0, 10, "Nota: El gráfico visual de Somatocarta está disponible en la pestaña 'Antropometría' de la aplicación web.", 0, 1, 'C')
+        
+    else:
+        pdf.set_font('Arial', 'I', 10)
+        pdf.cell(0, 10, "Datos de Somatotipo no calculados.", 0, 1, 'L')
+
+    return bytes(pdf.output(dest='S'))
+
+# --- FUNCIONES HELPER PARA EDICIÓN DE DIETA ---
 
 def eliminar_item_dieta(item_id_to_delete):
     """
@@ -1093,6 +1857,74 @@ def actualizar_gramos_item(item_id_to_update, nuevos_gramos):
     guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
     st.success(f"{item_actualizado['Alimento']} actualizado a {nuevos_gramos}g.")
 
+def asignar_item_a_plan_semanal(item_id, dia_seleccionado_key):
+    """
+    Toma un item de la dieta detallada y lo asigna al plan semanal
+    en el día y tiempo de comida correspondiente.
+    """
+    try:
+        # 1. Obtener el día seleccionado del widget que llamó a esta función
+        dia_seleccionado = st.session_state[dia_seleccionado_key]
+        
+        # Si la opción es la por defecto ("-- Asignar a... --"), no hacer nada
+        if dia_seleccionado == "-- Asignar a... --":
+            return
+
+        # 2. Encontrar el ítem en la dieta_temporal usando su ID
+        item_a_asignar = None
+        for item in st.session_state.dieta_temporal:
+            if item['id'] == item_id:
+                item_a_asignar = item
+                break
+        
+        if not item_a_asignar:
+            st.error(f"Error: No se encontró el ítem {item_id} para asignar.")
+            return
+
+        # 3. Obtener los detalles del ítem
+        alimento_nombre = item_a_asignar['Alimento']
+        alimento_gramos = item_a_asignar['Gramos']
+        tiempo_comida = item_a_asignar['Tiempo Comida'] # ej. "Almuerzo"
+        
+        # 4. Crear el string a añadir
+        item_str = f"{alimento_nombre} ({alimento_gramos:.0f}g)"
+
+        # 5. Cargar el plan semanal actual del paciente
+        plan_semanal_actual = st.session_state.paciente_actual.get('plan_semanal', {})
+        
+        # 6. Asegurar que la estructura del diccionario exista
+        if dia_seleccionado not in plan_semanal_actual:
+            plan_semanal_actual[dia_seleccionado] = {}
+        if tiempo_comida not in plan_semanal_actual[dia_seleccionado]:
+            plan_semanal_actual[dia_seleccionado][tiempo_comida] = ""
+
+        # 7. Añadir el string al plan semanal
+        texto_existente = plan_semanal_actual[dia_seleccionado][tiempo_comida]
+        
+        # Evitar duplicados (si ya se asignó)
+        if item_str in texto_existente:
+            st.toast(f"'{item_str}' ya estaba en {dia_seleccionado} - {tiempo_comida}.", icon="ℹ️")
+        else:
+            if texto_existente == "":
+                plan_semanal_actual[dia_seleccionado][tiempo_comida] = item_str
+            else:
+                # Añadir con una coma si ya había algo
+                plan_semanal_actual[dia_seleccionado][tiempo_comida] += f", {item_str}"
+            
+            # 8. Guardar los cambios en el paciente
+            st.session_state.paciente_actual['plan_semanal'] = plan_semanal_actual
+            guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
+            
+            # 9. Mostrar confirmación
+            st.toast(f"'{item_str}' asignado a {dia_seleccionado} - {tiempo_comida}.", icon="🗓️")
+
+        # 10. Resetear el selectbox a su estado inicial
+        st.session_state[dia_seleccionado_key] = "-- Asignar a... --"
+
+    except Exception as e:
+        st.error(f"Error al asignar al plan semanal: {e}")
+        traceback.print_exc()
+
 # --- FIN DE NUEVAS FUNCIONES HELPER ---
     
 
@@ -1103,6 +1935,7 @@ def mostrar_pagina_inicio():
     """Página principal para cargar, seleccionar y registrar pacientes."""
     st.title(f"Gestión de Pacientes 🧑‍⚕️ ({st.session_state.usuario})")
     
+    # Cargar la base de datos aquí para asegurar que esté disponible
     st.session_state.db_alimentos = cargar_base_de_datos_alimentos()
 
     st.header("Seleccionar Paciente Existente")
@@ -1188,6 +2021,7 @@ def mostrar_pagina_inicio():
         else:
             imc, diagnostico_imc = calcular_imc(peso, talla_cm)
             
+            # Usar la masa magra guardada (si existe) para Cunningham
             masa_magra = pa.get('composicion', {}).get('modelo_2c', {}).get('masa_magra', 0) 
             get = calcular_get(sexo, peso, talla_cm, edad, actividad, formula_get, masa_magra)
             
@@ -1211,7 +2045,8 @@ def mostrar_pagina_inicio():
                 'circunferencias': pa.get('circunferencias', {}), 
                 'diametros': pa.get('diametros', {}), 
                 'composicion': pa.get('composicion', {}),
-                'dieta_actual': st.session_state.dieta_temporal 
+                'dieta_actual': st.session_state.dieta_temporal,
+                'plan_semanal': pa.get('plan_semanal', {})
             }
             
             nombre_archivo = guardar_paciente(st.session_state.usuario, datos_paciente)
@@ -1225,6 +2060,7 @@ def mostrar_pagina_inicio():
                 col1.metric("IMC", f"{imc:.2f}", diagnostico_imc)
                 col2.metric("GET (Gasto Energético Total)", f"{get:.0f} kcal/día")
 
+# --- PÁGINA DE ANTROPOMETRÍA ---
 # --- PÁGINA DE ANTROPOMETRÍA ---
 def mostrar_pagina_antropometria():
     """Página para registrar pliegues, circunferencias, diámetros y ver composición corporal."""
@@ -1310,6 +2146,7 @@ def mostrar_pagina_antropometria():
             }
         }
         
+        # Recalcular GET si la fórmula es Cunningham y ahora tenemos masa magra
         if pa.get('formula_get') == 'Cunningham':
             masa_magra_2c = comp_2c.get('masa_magra', 0)
             if masa_magra_2c > 0:
@@ -1329,6 +2166,39 @@ def mostrar_pagina_antropometria():
     # --- SECCIÓN DE RESULTADOS (ACTUALIZADA CON TABS) ---
     st.subheader("Diagnóstico Nutricional")
     
+    # --- NUEVO: SECCIÓN DE DESCARGAS DE COMPOSICIÓN ---
+    st.markdown("##### Exportar Evaluación Corporal")
+    st.caption("Descargue el informe completo de la evaluación antropométrica, composición y somatotipo.")
+    
+    col_ex_1, col_ex_2 = st.columns(2)
+    
+    with col_ex_1:
+        excel_data_composicion = generar_excel_composicion(pa)
+        st.download_button(
+            label="📥 Descargar Evaluación (.xlsx)",
+            data=excel_data_composicion,
+            file_name=f"evaluacion_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="export_eval_xlsx_antropo"
+        )
+    with col_ex_2:
+        # Esta función ahora genera el PDF con el gráfico de somatotipo
+        pdf_data_composicion = generar_pdf_composicion(pa)
+        st.download_button(
+            label="📄 Descargar Evaluación (PDF)",
+            data=pdf_data_composicion,
+            file_name=f"evaluacion_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary",
+            key="export_eval_pdf_antropo"
+        )
+    
+    st.divider()
+    # --- FIN DE SECCIÓN DE DESCARGAS ---
+
+    
     pa = st.session_state.paciente_actual
     comp = pa.get('composicion', {})
     comp_2c = comp.get('modelo_2c', {})
@@ -1342,6 +2212,7 @@ def mostrar_pagina_antropometria():
         "🔬 Modelo 5C (Kerr - Modificado)",
     ]
     
+    # Fórmulas específicas por sexo
     formulas_masculinas = {
         "🧬 Sloan (1967)": "Sloan (1967) - Varones",
         "🧫 Wilmore & Behnke (1969)": "Wilmore & Behnke (1969) - Varones",
@@ -1442,6 +2313,7 @@ def mostrar_pagina_antropometria():
         else:
             st.info("No se han calculado datos para el Modelo 5C. Por favor, ingrese todas las medidas y presione 'Calcular'.")
     
+    # Iterar sobre las pestañas de fórmulas personalizadas
     for tab, (nombre_corto_con_emoji, nombre_largo_funcion) in zip(tabs_formulas, formulas_a_mostrar.items()):
         with tab:
             st.markdown(f"##### Cálculo de Composición: {nombre_corto_con_emoji.split(' ', 1)[-1]}")
@@ -1535,7 +2407,7 @@ def mostrar_pagina_antropometria():
             st.info("No se han calculado datos para el Somatotipo. Por favor, ingrese las medidas necesarias y presione 'Calcular'.")
 
 
-# --- NUEVA PÁGINA: ASISTENTE DE IA ---
+# --- PÁGINA: ASISTENTE DE IA ---
 def mostrar_pagina_asistente_ia():
     """
     Página dedicada para interactuar con el Asistente de IA (Gemini).
@@ -1623,41 +2495,64 @@ def mostrar_pagina_asistente_ia():
     # Espacio entre tarjetas
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- Tarjeta 2: Generador de Recetas Peruanas ---
+    # --- Tarjeta 2: Generador de Recetas Peruanas (MODIFICADA) ---
     with st.container(border=True):
-        st.markdown("### 🇵🇪 Generar Ideas de Recetas Peruanas")
-        st.markdown("Escribe un ingrediente principal y la IA buscará recetas peruanas que lo utilicen.")
+        st.markdown("### 🇵🇪 Generar Ideas de Recetas Peruanas (Adaptadas)")
+        st.markdown("Escribe un ingrediente y la IA buscará recetas **adecuadas al GET y macros del paciente**.")
         
         with st.form("form_recetas_ia"):
             ingrediente = st.text_input("Ingrediente principal (ej. Pollo, Lentejas, Quinua, Pescado)")
-            submit_receta = st.form_submit_button("Buscar Recetas Peruanas")
+            submit_receta = st.form_submit_button("Buscar Recetas Peruanas Adaptadas")
             
             if submit_receta and ingrediente:
                 if modelo_gemini is None:
                     st.error("El modelo de IA no está disponible.")
                 else:
-                    prompt_receta = f"""
-                    Actúa como un chef experto en **cocina peruana**.
-                    Quiero recetas que usen el ingrediente principal: "{ingrediente}".
+                    pa = st.session_state.paciente_actual
+                    macros_deseados = st.session_state.get('dist_macros', {'cho': 50, 'prot': 20, 'fat': 30})
+                    total_get = pa.get('get', 0)
+                    
+                    calorias_comida_objetivo = total_get * 0.35
+                    
+                    if calorias_comida_objetivo <= 0:
+                        calorias_comida_objetivo = 600 
+                        
+                    historia_clinica = pa.get('historia_clinica', 'Sin notas')
 
-                    Contexto:
-                    1.  Busca en internet **recetas peruanas** (ej. Lomo Saltado, Ají de Gallina, Causa, Ceviche, etc.) que usen "{ingrediente}".
-                    2.  También considera esta lista de alimentos de mi base de datos como inspiración: {lista_alimentos_str}
-                    3.  Genera 3 ideas de recetas.
-                    
-                    Instrucciones para la respuesta:
+                    prompt_receta = f"""
+                    Actúa como un chef experto en **cocina peruana** y un **asistente de nutrición**.
+                    Quiero 3 ideas de recetas peruanas que usen el ingrediente principal: "{ingrediente}".
+
+                    **REQUISITOS IMPORTANTES DEL PACIENTE:**
+                    Estas recetas deben ser adecuadas para un paciente con las siguientes necesidades. 
+                    Cada receta (para 1 porción/plato) debe apuntar a:
+
+                    1.  **Objetivo Calórico por Plato:** Aprox. **{calorias_comida_objetivo:.0f} kcal**.
+                    2.  **Distribución de Macros (General del Paciente):** - Proteínas: {macros_deseados['prot']}%
+                        - Carbohidratos: {macros_deseados['cho']}%
+                        - Grasas: {macros_deseados['fat']}%
+                    3.  **Restricciones/Alergias:** "{historia_clinica}". (Si dice 'Sin notas', ignora esto).
+                    4.  **Ingrediente Principal Obligatorio:** "{ingrediente}".
+                    5.  **Inspiración (opcional):** {lista_alimentos_str}
+
+                    **Instrucciones para la respuesta (Formato Markdown):**
+                    Para CADA UNA de las 3 recetas:
                     1.  **Título de la Receta (con emoji peruano 🇵🇪)**.
-                    2.  **Ingredientes Principales:** (lista de ingredientes).
-                    3.  **Preparación:** (pasos claros y sencillos).
-                    4.  **¡Importante!** Al final, en un bloque separado, escribe:
-                        "--- \n **Recuerda:** Para agregar esta receta a tu dieta, debes buscar y añadir los ingredientes (con sus gramos) uno por uno usando el **buscador manual** en la página 'Crear Dieta'."
-                    
-                    Formatea todo con Markdown.
+                    2.  **Estimación Nutricional (1 porción):**
+                        - Kcal: (El valor aproximado a {calorias_comida_objetivo:.0f})
+                        - Proteínas: (g)
+                        - Grasas: (g)
+                        - Carbohidratos: (g)
+                    3.  **Ingredientes Principales (para 1 porción):** (lista de ingredientes CON GRAMOS APROXIMADOS).
+                    4.  **Preparación:** (pasos claros y sencillos).
+                    5.  **Justificación de Adecuación:** (Breve explicación de por qué esta receta cumple los requisitos calóricos y/o de macros).
+
+                    ---
+                    **Recuerda:** Para agregar esta receta a tu dieta, debes buscar y añadir los ingredientes (con sus gramos) uno por uno usando el **buscador manual** en la página 'Crear Dieta'.
                     """
                     
-                    with st.spinner(f"Buscando recetas peruanas con {ingrediente}..."):
+                    with st.spinner(f"Buscando recetas peruanas adaptadas con {ingrediente}..."):
                         respuesta_ia = generar_respuesta_gemini(modelo_gemini, prompt_receta)
-                        # Usamos una clave de sesión específica para esta página
                         st.session_state.respuesta_receta_ia = respuesta_ia
 
     # --- RESULTADO MINIMIZABLE 2 ---
@@ -1668,7 +2563,7 @@ def mostrar_pagina_asistente_ia():
 # --- FIN DE LA NUEVA PÁGINA ---
 
 
-# --- PÁGINA DE CREAR DIETA (REEMPLAZADA CON EDICIÓN EN LÍNEA Y CORRECCIÓN DE KEYERROR) ---
+# --- PÁGINA DE CREAR DIETA (CON ASIGNADOR SEMANAL) ---
 def mostrar_pagina_crear_dieta():
     """Página para buscar alimentos y agregarlos a la dieta del paciente."""
     st.title("Creación de Dieta 🍲")
@@ -1681,181 +2576,231 @@ def mostrar_pagina_crear_dieta():
         st.error("La base de datos de alimentos no se ha cargado correctamente.")
         st.stop()
     
-    # Cargar y preparar la base de datos de alimentos
-    db_alimentos = st.session_state.db_alimentos.copy()
-    db_alimentos['busqueda_display'] = "[" + db_alimentos['CÓDIGO'].astype(str) + "] " + db_alimentos['NOMBRE DEL ALIMENTO']
-    
     pa = st.session_state.paciente_actual
     
     st.info(f"Paciente: **{pa['nombre']}** | GET Objetivo: **{pa.get('get', 0):.0f} kcal** (Usando: {pa.get('formula_get', 'N/A')})")
     
-    # --- Formulario para agregar alimento (con búsqueda integrada) ---
-    st.subheader("Agregar Alimento (Manual)")
-    
-    with st.form("form_agregar_alimento"):
-        
-        alimento_busqueda_sel = st.selectbox(
-            "Buscar y seleccionar alimento (por Código o Nombre):", 
-            options=db_alimentos['busqueda_display'],
-            index=None,
-            placeholder="Escriba el código o nombre del alimento..."
-        )
-        
-        col1, col2 = st.columns(2)
-        gramos = col1.number_input("Cantidad (gramos)", min_value=1, value=100, step=1)
-        tiempo_comida = col2.selectbox(
-            "Tiempo de Comida", 
-            ["Desayuno", "Colación Mañana", "Almuerzo", "Colación Tarde", "Cena", "Colación Noche"]
-        )
-        
-        submitted = st.form_submit_button("Agregar a la Dieta")
+    tab_diaria, tab_semanal = st.tabs(["🥣 Dieta Detallada (Ingredientes del Día)", "🗓️ Plan Semanal (Alto Nivel)"])
 
-    # Lógica de guardado
-    if submitted and alimento_busqueda_sel and gramos > 0:
-        alimento_data = db_alimentos[db_alimentos['busqueda_display'] == alimento_busqueda_sel].iloc[0]
-        alimento_nombre_sel = alimento_data['NOMBRE DEL ALIMENTO']
-        factor = gramos / 100.0
+    # --- Pestaña 1: Dieta Detallada (Lógica Anterior) ---
+    with tab_diaria:
+        # Cargar y preparar la base de datos de alimentos
+        db_alimentos = st.session_state.db_alimentos.copy()
+        db_alimentos['busqueda_display'] = "[" + db_alimentos['CÓDIGO'].astype(str) + "] " + db_alimentos['NOMBRE DEL ALIMENTO']
         
-        item_dieta = {
-            'id': f"{alimento_data['CÓDIGO']}_{pd.Timestamp.now().isoformat()}",
-            'Tiempo Comida': tiempo_comida,
-            'Código': alimento_data['CÓDIGO'],
-            'Alimento': alimento_data['NOMBRE DEL ALIMENTO'],
-            'Gramos': gramos,
-            'Kcal': alimento_data['Kcal'] * factor,
-            'Proteínas': alimento_data['Proteínas'] * factor,
-            'Grasas': alimento_data['Grasas'] * factor,
-            'Carbohidratos': alimento_data['Carbohidratos'] * factor,
-            'Fibra': alimento_data['Fibra'] * factor,
-            'Agua': alimento_data['Agua'] * factor,
-            'Calcio': alimento_data['Calcio'] * factor,
-            'Fósforo': alimento_data['Fósforo'] * factor,
-            'Zinc': alimento_data['Zinc'] * factor,
-            'Hierro': alimento_data['Hierro'] * factor,
-            'Vitamina C': alimento_data['Vitamina C'] * factor,
-            'Sodio': alimento_data['Sodio'] * factor,
-            'Potasio': alimento_data['Potasio'] * factor,
-            'Beta-Caroteno': alimento_data['Beta-Caroteno'] * factor,
-            'Vitamina A': alimento_data['Vitamina A'] * factor,
-            'Tiamina': alimento_data['Tiamina'] * factor,
-            'Riboflavina': alimento_data['Riboflavina'] * factor,
-            'Niacina': alimento_data['Niacina'] * factor,
-            'Acido Folico': alimento_data['Acido Folico'] * factor
-        }
+        # --- Formulario para agregar alimento (con búsqueda integrada) ---
+        st.subheader("Agregar Ingrediente (Dieta Detallada)")
+        st.caption("Esta sección es para la dieta detallada (generalmente 1 día). Los totales se calculan en base a esta lista.")
         
-        st.session_state.dieta_temporal.append(item_dieta)
-        st.success(f"{gramos}g de '{alimento_nombre_sel}' agregados a '{tiempo_comida}'.")
-        st.session_state.paciente_actual['dieta_actual'] = st.session_state.dieta_temporal
-        guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
-        st.rerun()
-
-    # Expander de detalles del alimento
-    with st.expander("Ver detalles del alimento seleccionado en la búsqueda"):
-        if alimento_busqueda_sel:
-            alimento_detalles = db_alimentos[db_alimentos['busqueda_display'] == alimento_busqueda_sel].iloc[0]
-            st.dataframe(alimento_detalles)
-    
-    st.divider()
-
-    # --- Dieta Actual (CON INTERFAZ DE EDICIÓN Y BORRADO) ---
-    st.subheader("Plan de Dieta Actual (Manual)")
-    if not st.session_state.dieta_temporal:
-        st.info("Aún no se han agregado alimentos a la dieta.")
-    else:
-        df_dieta = pd.DataFrame(st.session_state.dieta_temporal)
-        # Columnas para mostrar en la tabla personalizada
-        columnas_display = ['Alimento', 'Gramos', 'Kcal', 'Proteínas', 'Grasas', 'Carbohidratos']
-        tiempos_de_comida_orden = [
-            "Desayuno", "Colación Mañana", "Almuerzo", 
-            "Colación Tarde", "Cena", "Colación Noche"
-        ]
-        
-        if 'Tiempo Comida' in df_dieta.columns:
-            df_dieta['Tiempo Comida'] = pd.Categorical(
-                df_dieta['Tiempo Comida'], 
-                categories=tiempos_de_comida_orden, 
-                ordered=True
-            )
-            df_dieta = df_dieta.sort_values('Tiempo Comida')
+        with st.form("form_agregar_alimento"):
             
-            # --- CORRECCIÓN KEYERROR ---
-            # Agrupamos por 'Tiempo Comida' pero respetando el orden categórico
-            grupos = df_dieta.groupby('Tiempo Comida', observed=True)
-            
-            for tiempo in tiempos_de_comida_orden:
-                # ESTA LÍNEA ES LA CORRECCIÓN:
-                # Solo intenta mostrar el grupo si existe en los datos
-                if tiempo in grupos.groups: 
-                    st.markdown(f"##### {tiempo}")
-                    df_tiempo = grupos.get_group(tiempo) # Esta línea ya no dará error
-                    
-                    # --- INICIO DE LA NUEVA INTERFAZ ---
-                    
-                    # 1. Crear el encabezado de la "tabla"
-                    header_cols = st.columns([3, 1, 1, 1, 1, 1, 0.5, 0.5]) 
-                    header_cols[0].markdown("**Alimento**")
-                    header_cols[1].markdown("**Gramos**")
-                    header_cols[2].markdown("**Kcal**")
-                    header_cols[3].markdown("**Prot.**")
-                    header_cols[4].markdown("**Grasas**")
-                    header_cols[5].markdown("**Carb.**")
-                    header_cols[6].markdown("✏️")
-                    header_cols[7].markdown("🗑️")
-                    st.divider()
-
-                    # 2. Iterar sobre los items de comida de ESE tiempo
-                    for item in df_tiempo.to_dict('records'):
-                        item_id = item['id']
-                        
-                        item_cols = st.columns([3, 1, 1, 1, 1, 1, 0.5, 0.5])
-                        item_cols[0].write(item['Alimento'])
-                        item_cols[1].write(f"{item['Gramos']:.0f}")
-                        item_cols[2].write(f"{item['Kcal']:.0f}")
-                        item_cols[3].write(f"{item['Proteínas']:.1f}")
-                        item_cols[4].write(f"{item['Grasas']:.1f}")
-                        item_cols[5].write(f"{item['Carbohidratos']:.1f}")
-                        
-                        # --- Botón de Edición (Popover) ---
-                        with item_cols[6].popover("", use_container_width=False):
-                            st.markdown(f"**Editar:**")
-                            st.caption(f"{item['Alimento']}")
-                            with st.form(key=f"edit_form_{item_id}"):
-                                nuevos_gramos = st.number_input(
-                                    "Gramos", 
-                                    min_value=1, 
-                                    value=int(item['Gramos']), 
-                                    step=1
-                                )
-                                if st.form_submit_button("✔️"):
-                                    actualizar_gramos_item(item_id, nuevos_gramos)
-                                    st.rerun()
-                        
-                        # --- Botón de Borrado ---
-                        if item_cols[7].button("🗑️", key=f"del_item_{item_id}", help=f"Eliminar {item['Alimento']}"):
-                            eliminar_item_dieta(item_id)
-                            st.rerun()
-                    # --- FIN DE LA NUEVA INTERFAZ ---
-            # --- FIN DE LA CORRECCIÓN ---
-        else:
-            # Esto se muestra si la dieta tiene items pero no tienen 'Tiempo Comida' (legacy)
-            st.dataframe(
-                df_dieta[columnas_display].round(1).reset_index(drop=True),
-                use_container_width=True
+            alimento_busqueda_sel = st.selectbox(
+                "Buscar y seleccionar alimento (por Código o Nombre):", 
+                options=db_alimentos['busqueda_display'],
+                index=None,
+                placeholder="Escriba el código o nombre del alimento..."
             )
-        
-        # --- Lógica de Limpiar toda la dieta (se mantiene) ---
-        st.divider()
-        if st.button("Limpiar toda la dieta", type="primary", use_container_width=True):
-            st.session_state.dieta_temporal = []
-            st.session_state.paciente_actual['dieta_actual'] = []
+            
+            col1, col2 = st.columns(2)
+            gramos = col1.number_input("Cantidad (gramos)", min_value=1, value=100, step=1)
+            tiempo_comida_diario = col2.selectbox(
+                "Tiempo de Comida", 
+                ["Desayuno", "Colación Mañana", "Almuerzo", "Colación Tarde", "Cena", "Colación Noche"],
+                key="tiempo_comida_diario"
+            )
+            
+            submitted_diario = st.form_submit_button("Agregar a la Dieta Detallada")
+
+        # Lógica de guardado
+        if submitted_diario and alimento_busqueda_sel and gramos > 0:
+            alimento_data = db_alimentos[db_alimentos['busqueda_display'] == alimento_busqueda_sel].iloc[0]
+            alimento_nombre_sel = alimento_data['NOMBRE DEL ALIMENTO']
+            factor = gramos / 100.0
+            
+            item_dieta = {
+                'id': f"{alimento_data['CÓDIGO']}_{pd.Timestamp.now().isoformat()}",
+                'Tiempo Comida': tiempo_comida_diario,
+                'Código': alimento_data['CÓDIGO'],
+                'Alimento': alimento_data['NOMBRE DEL ALIMENTO'],
+                'Gramos': gramos,
+                'Kcal': alimento_data['Kcal'] * factor,
+                'Proteínas': alimento_data['Proteínas'] * factor,
+                'Grasas': alimento_data['Grasas'] * factor,
+                'Carbohidratos': alimento_data['Carbohidratos'] * factor,
+                'Fibra': alimento_data['Fibra'] * factor,
+                'Agua': alimento_data['Agua'] * factor,
+                'Calcio': alimento_data['Calcio'] * factor,
+                'Fósforo': alimento_data['Fósforo'] * factor,
+                'Zinc': alimento_data['Zinc'] * factor,
+                'Hierro': alimento_data['Hierro'] * factor,
+                'Vitamina C': alimento_data['Vitamina C'] * factor,
+                'Sodio': alimento_data['Sodio'] * factor,
+                'Potasio': alimento_data['Potasio'] * factor,
+                'Beta-Caroteno': alimento_data['Beta-Caroteno'] * factor,
+                'Vitamina A': alimento_data['Vitamina A'] * factor,
+                'Tiamina': alimento_data['Tiamina'] * factor,
+                'Riboflavina': alimento_data['Riboflavina'] * factor,
+                'Niacina': alimento_data['Niacina'] * factor,
+                'Acido Folico': alimento_data['Acido Folico'] * factor
+            }
+            
+            st.session_state.dieta_temporal.append(item_dieta)
+            st.success(f"{gramos}g de '{alimento_nombre_sel}' agregados a '{tiempo_comida_diario}'.")
+            st.session_state.paciente_actual['dieta_actual'] = st.session_state.dieta_temporal
             guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
             st.rerun()
+
+        # Expander de detalles del alimento
+        with st.expander("Ver detalles del alimento seleccionado en la búsqueda"):
+            if alimento_busqueda_sel:
+                alimento_detalles = db_alimentos[db_alimentos['busqueda_display'] == alimento_busqueda_sel].iloc[0]
+                st.dataframe(alimento_detalles)
+        
+        st.divider()
+
+        # --- Dieta Actual (CON INTERFAZ DE EDICIÓN Y BORRADO) ---
+        st.subheader("Plan de Dieta Detallada (Ingredientes)")
+        if not st.session_state.dieta_temporal:
+            st.info("Aún no se han agregado ingredientes a la dieta detallada.")
+        else:
+            df_dieta = pd.DataFrame(st.session_state.dieta_temporal)
+            columnas_display = ['Alimento', 'Gramos', 'Kcal', 'Proteínas', 'Grasas', 'Carbohidratos']
+            tiempos_comida = ["Desayuno", "Colación Mañana", "Almuerzo", "Colación Tarde", "Cena", "Colación Noche"]
+            
+            # --- OPCIONES PARA EL NUEVO SELECTBOX ---
+            dias_semana_options = ["-- Asignar a... --", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+            
+            if 'Tiempo Comida' in df_dieta.columns:
+                df_dieta['Tiempo Comida'] = pd.Categorical(
+                    df_dieta['Tiempo Comida'], 
+                    categories=tiempos_comida, 
+                    ordered=True
+                )
+                df_dieta = df_dieta.sort_values('Tiempo Comida')
+                
+                grupos = df_dieta.groupby('Tiempo Comida', observed=True)
+                
+                for tiempo in tiempos_comida:
+                    if tiempo in grupos.groups: 
+                        st.markdown(f"##### {tiempo}")
+                        df_tiempo = grupos.get_group(tiempo)
+                        
+                        # --- MODIFICADO: Añadida columna 1.5 para el selectbox ---
+                        header_cols = st.columns([3, 1, 1, 1, 1, 1, 1.5, 0.5, 0.5]) 
+                        header_cols[0].markdown("**Alimento**")
+                        header_cols[1].markdown("**Gramos**")
+                        header_cols[2].markdown("**Kcal**")
+                        header_cols[3].markdown("**Prot.**")
+                        header_cols[4].markdown("**Grasas**")
+                        header_cols[5].markdown("**Carb.**")
+                        header_cols[6].markdown("🗓️ **Asignar Día**") # <-- NUEVO
+                        header_cols[7].markdown("✏️") # <-- MODIFICADO (antes 6)
+                        header_cols[8].markdown("🗑️") # <-- MODIFICADO (antes 7)
+                        st.divider()
+
+                        for item in df_tiempo.to_dict('records'):
+                            item_id = item['id']
+                            
+                            # --- MODIFICADO: Columnas ajustadas ---
+                            item_cols = st.columns([3, 1, 1, 1, 1, 1, 1.5, 0.5, 0.5])
+                            item_cols[0].write(item['Alimento'])
+                            item_cols[1].write(f"{item['Gramos']:.0f}")
+                            item_cols[2].write(f"{item['Kcal']:.0f}")
+                            item_cols[3].write(f"{item['Proteínas']:.1f}")
+                            item_cols[4].write(f"{item['Grasas']:.1f}")
+                            item_cols[5].write(f"{item['Carbohidratos']:.1f}")
+                            
+                            # --- NUEVO WIDGET (COLUMNA 6) ---
+                            key_select_dia = f"dia_select_{item_id}"
+                            
+                            item_cols[6].selectbox(
+                                "Asignar día", 
+                                options=dias_semana_options, 
+                                index=0, 
+                                label_visibility="collapsed", 
+                                key=key_select_dia,
+                                on_change=asignar_item_a_plan_semanal, # <-- Callback
+                                args=(item_id, key_select_dia)       # <-- Argumentos
+                            )
+                            # --- FIN NUEVO WIDGET ---
+                            
+                            # --- MODIFICADO: (Columna 7) ---
+                            with item_cols[7].popover("", use_container_width=False):
+                                st.markdown(f"**Editar:**")
+                                st.caption(f"{item['Alimento']}")
+                                with st.form(key=f"edit_form_{item_id}"):
+                                    nuevos_gramos = st.number_input(
+                                        "Gramos", 
+                                        min_value=1, 
+                                        value=int(item['Gramos']), 
+                                        step=1
+                                    )
+                                    if st.form_submit_button("✔️"):
+                                        actualizar_gramos_item(item_id, nuevos_gramos)
+                                        st.rerun()
+                            
+                            # --- MODIFICADO: (Columna 8) ---
+                            if item_cols[8].button("🗑️", key=f"del_item_{item_id}", help=f"Eliminar {item['Alimento']}"):
+                                eliminar_item_dieta(item_id)
+                                st.rerun()
+            else:
+                st.dataframe(
+                    df_dieta[columnas_display].round(1).reset_index(drop=True),
+                    use_container_width=True
+                )
+            
+            st.divider()
+            if st.button("Limpiar toda la dieta detallada", type="primary", use_container_width=True):
+                st.session_state.dieta_temporal = []
+                st.session_state.paciente_actual['dieta_actual'] = []
+                guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
+                st.rerun()
+    
+    # --- Pestaña 2: Plan Semanal (Formulario de Edición) ---
+    with tab_semanal:
+        st.subheader("Planificador Semanal (Nombres de Preparaciones)")
+        st.caption("Escriba los nombres de las preparaciones para cada día. Esto es un plan de alto nivel y no afecta los cálculos de macros (esos se ven en la Dieta Detallada).")
+        
+        dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+        tiempos_comida = ["Desayuno", "Colación Mañana", "Almuerzo", "Colación Tarde", "Cena", "Colación Noche"]
+        
+        # Cargar el plan semanal existente
+        plan_semanal_actual = st.session_state.paciente_actual.get('plan_semanal', {})
+
+        with st.form("form_plan_semanal"):
+            for dia in dias_semana:
+                with st.expander(f"#### {dia}"):
+                    for tiempo in tiempos_comida:
+                        # Usamos una clave única para cada input
+                        input_key = f"{dia}_{tiempo}"
+                        # Obtenemos el valor guardado
+                        valor_guardado = plan_semanal_actual.get(dia, {}).get(tiempo, "")
+                        st.text_input(f"{tiempo}", value=valor_guardado, key=input_key)
+            
+            submitted_semanal = st.form_submit_button("Guardar Plan Semanal Completo", type="primary", use_container_width=True)
+            
+            if submitted_semanal:
+                nuevo_plan_semanal = {}
+                for dia in dias_semana:
+                    nuevo_plan_semanal[dia] = {}
+                    for tiempo in tiempos_comida:
+                        input_key = f"{dia}_{tiempo}"
+                        # Recogemos el valor del session state usando la clave
+                        nuevo_plan_semanal[dia][tiempo] = st.session_state[input_key]
+                
+                # Guardar en el paciente
+                st.session_state.paciente_actual['plan_semanal'] = nuevo_plan_semanal
+                guardar_paciente(st.session_state.usuario, st.session_state.paciente_actual)
+                st.success("¡Plan semanal guardado exitosamente!")
+                # Actualizar el valor en memoria para el form
+                plan_semanal_actual = nuevo_plan_semanal
 # --- FIN DE PÁGINA CREAR DIETA ---
 
 
+# --- PÁGINA DE RESUMEN DE DIETA (MODIFICADA CON PLAN SEMANAL) ---
 def mostrar_pagina_resumen_dieta():
     """Página para ver los totales de la dieta, gráficos y adecuación."""
-    st.title("Resumen de Dieta y Adecuación 📊")
+    st.title("Resumen de Dieta y Exportación 📊")
     
     if not st.session_state.paciente_actual:
         st.warning("Por favor, cargue o registre un paciente en la página de 'Inicio' primero.")
@@ -1863,188 +2808,277 @@ def mostrar_pagina_resumen_dieta():
         
     pa = st.session_state.paciente_actual
     
-    if not st.session_state.dieta_temporal:
-        st.info("No hay alimentos en la dieta actual para mostrar un resumen.")
-        
-        st.subheader("Exportar Evaluación")
-        st.write("Aunque no hay dieta, puede descargar la evaluación corporal del paciente.")
-        excel_data_composicion = generar_excel_composicion(pa)
-        st.download_button(
-            label="📥 Descargar Evaluación Corporal (.xlsx)",
-            data=excel_data_composicion,
-            file_name=f"evaluacion_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-        st.stop()
+    # --- Pestañas para Resumen Detallado (Día) y Resumen Semanal (Alto Nivel) ---
+    tab_diario, tab_semanal = st.tabs(["📊 Resumen del Día (Detallado)", "🗓️ Resumen Semanal (Alto Nivel)"])
 
-    
-    df_dieta = pd.DataFrame(st.session_state.dieta_temporal)
-    
-    # --- 1. Totales y Adecuación ---
-    st.subheader("Totales Diarios y Adecuación al GET")
-    
-    get_paciente = pa.get('get', 0)
-    
-    total_kcal = df_dieta['Kcal'].sum()
-    total_prot = df_dieta['Proteínas'].sum()
-    total_fat = df_dieta['Grasas'].sum()
-    total_cho = df_dieta['Carbohidratos'].sum()
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Kcal Totales", f"{total_kcal:.0f} kcal")
-    col2.metric("GET Objetivo", f"{get_paciente:.0f} kcal", help=f"Calculado con: {pa.get('formula_get', 'N/A')}")
-    
-    adecuacion = 0.0
-    if get_paciente > 0:
-        adecuacion = (total_kcal / get_paciente) * 100
-        
-    col3.metric("Adecuación GET", f"{adecuacion:.1f} %")
-    
-    # --- 2. Distribución de Macronutrientes ---
-    st.subheader("Distribución de Macronutrientes")
-    
-    kcal_prot = total_prot * 4
-    kcal_fat = total_fat * 9
-    kcal_cho = total_cho * 4
-    kcal_total_macros = kcal_prot + kcal_fat + kcal_cho
-    
-    if kcal_total_macros == 0:
-        st.info("Agregue alimentos para ver la distribución de macronutrientes.")
-        st.stop()
-
-    porc_prot = (kcal_prot / kcal_total_macros) * 100
-    porc_fat = (kcal_fat / kcal_total_macros) * 100
-    porc_cho = (kcal_cho / kcal_total_macros) * 100
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.markdown("##### Distribución Actual")
-        labels = ['Proteínas', 'Grasas', 'Carbohidratos']
-        values = [porc_prot, porc_fat, porc_cho]
-
-        fig = go.Figure(data=[go.Pie(
-            labels=labels, 
-            values=values, 
-            textinfo='label+percent', 
-            insidetextorientation='radial',
-            pull=[0.05, 0.05, 0.05],
-            marker_colors=['#007bff', '#dc3545', '#ffc107']
-        )])
-        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.markdown("##### Ajuste de Distribución Deseada")
-        if 'dist_macros' not in st.session_state:
-            st.session_state.dist_macros = {'cho': 50, 'prot': 20, 'fat': 30}
+    # --- Pestaña 1: Resumen del Día Detallado (Lógica Anterior) ---
+    with tab_diario:
+        if not st.session_state.dieta_temporal:
+            st.info("No hay alimentos en la dieta detallada para mostrar un resumen.")
+            st.info("Agregue alimentos en la pestaña 'Crear Dieta' para ver los cálculos.")
+            st.info("Puede ver el Plan Semanal en la pestaña 'Resumen Semanal' si ya lo ha creado.")
             
-        porc_cho_deseado = st.slider("% Carbohidratos", 0, 100, st.session_state.dist_macros['cho'], key='slider_cho')
-        porc_prot_deseado = st.slider("% Proteínas", 0, 100, st.session_state.dist_macros['prot'], key='slider_prot')
-        
-        porc_fat_deseado = 100 - porc_cho_deseado - porc_prot_deseado
-        if porc_fat_deseado < 0: 
-            porc_fat_deseado = 0
-            porc_cho_deseado = 100 - porc_prot_deseado
-        
-        st.slider("% Grasas (auto)", 0, 100, porc_fat_deseado, disabled=True)
-        
-        st.session_state.dist_macros = {'cho': porc_cho_deseado, 'prot': porc_prot_deseado, 'fat': porc_fat_deseado}
-        
-        if porc_cho_deseado + porc_prot_deseado + porc_fat_deseado != 100:
-            st.warning("Los porcentajes deben sumar 100%. Ajuste los sliders.")
+        else:
+            df_dieta = pd.DataFrame(st.session_state.dieta_temporal)
+            
+            # --- 1. Totales y Adecuación ---
+            st.subheader("Totales Diarios (Detallados) y Adecuación al GET")
+            
+            get_paciente = pa.get('get', 0)
+            
+            total_kcal = df_dieta['Kcal'].sum()
+            total_prot = df_dieta['Proteínas'].sum()
+            total_fat = df_dieta['Grasas'].sum()
+            total_cho = df_dieta['Carbohidratos'].sum()
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Kcal Totales", f"{total_kcal:.0f} kcal")
+            col2.metric("GET Objetivo", f"{get_paciente:.0f} kcal", help=f"Calculado con: {pa.get('formula_get', 'N/A')}")
+            
+            adecuacion = 0.0
+            if get_paciente > 0:
+                adecuacion = (total_kcal / get_paciente) * 100
+                
+            col3.metric("Adecuación GET", f"{adecuacion:.1f} %")
+            
+            # --- 2. Distribución de Macronutrientes ---
+            st.subheader("Distribución de Macronutrientes (Día Detallado)")
+            
+            kcal_prot = total_prot * 4
+            kcal_fat = total_fat * 9
+            kcal_cho = total_cho * 4
+            kcal_total_macros = kcal_prot + kcal_fat + kcal_cho
+            
+            if kcal_total_macros == 0:
+                st.info("Agregue alimentos para ver la distribución de macronutrientes.")
+            else:
+                porc_prot = (kcal_prot / kcal_total_macros) * 100
+                porc_fat = (kcal_fat / kcal_total_macros) * 100
+                porc_cho = (kcal_cho / kcal_total_macros) * 100
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("##### Distribución Actual")
+                    labels = ['Proteínas', 'Grasas', 'Carbohidratos']
+                    values = [porc_prot, porc_fat, porc_cho]
 
-    # --- 3. Tabla de Adecuación (Gramos) ---
-    st.markdown("##### Comparativa de Gramos (Actual vs Objetivo)")
-    
-    gramos_prot_obj = (get_paciente * (porc_prot_deseado / 100)) / 4
-    gramos_cho_obj = (get_paciente * (porc_cho_deseado / 100)) / 4
-    gramos_fat_obj = (get_paciente * (porc_fat_deseado / 100)) / 9
+                    fig = go.Figure(data=[go.Pie(
+                        labels=labels, 
+                        values=values, 
+                        textinfo='label+percent', 
+                        insidetextorientation='radial',
+                        pull=[0.05, 0.05, 0.05],
+                        marker_colors=['#007bff', '#dc3545', '#ffc107']
+                    )])
+                    fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
 
-    df_macros = pd.DataFrame({
-        '': ['Actual (g)', 'Objetivo (g)', 'Diferencia (g)'],
-        'Proteínas': [total_prot, gramos_prot_obj, total_prot - gramos_prot_obj],
-        'Grasas': [total_fat, gramos_fat_obj, total_fat - gramos_fat_obj],
-        'Carbohidratos': [total_cho, gramos_cho_obj, total_cho - gramos_cho_obj]
-    }).set_index('')
-    
-    st.dataframe(df_macros.style.format("{:.1f}"), use_container_width=True)
-    
-    # --- 4. Resumen por Tiempo de Comida (CORREGIDO PARA KEYERROR) ---
-    st.subheader("Resumen por Tiempo de Comida")
-    
-    tiempos_de_comida_orden = [
-            "Desayuno", "Colación Mañana", "Almuerzo", 
-            "Colación Tarde", "Cena", "Colación Noche"
-    ]
-    cols_resumen = ['Kcal', 'Proteínas', 'Grasas', 'Carbohidratos']
-    
-    df_resumen_final = pd.DataFrame(columns=cols_resumen)
+                with col2:
+                    st.markdown("##### Ajuste de Distribución Deseada")
+                    if 'dist_macros' not in st.session_state:
+                        st.session_state.dist_macros = {'cho': 50, 'prot': 20, 'fat': 30}
+                        
+                    porc_cho_deseado = st.slider("% Carbohidratos", 0, 100, st.session_state.dist_macros['cho'], key='slider_cho_resumen')
+                    porc_prot_deseado = st.slider("% Proteínas", 0, 100, st.session_state.dist_macros['prot'], key='slider_prot_resumen')
+                    
+                    porc_fat_deseado = 100 - porc_cho_deseado - porc_prot_deseado
+                    if porc_fat_deseado < 0: 
+                        porc_fat_deseado = 0
+                        porc_cho_deseado = 100 - porc_prot_deseado
+                    
+                    st.slider("% Grasas (auto)", 0, 100, porc_fat_deseado, disabled=True, key='slider_fat_resumen')
+                    
+                    st.session_state.dist_macros = {'cho': porc_cho_deseado, 'prot': porc_prot_deseado, 'fat': porc_fat_deseado}
+                    
+                    if porc_cho_deseado + porc_prot_deseado + porc_fat_deseado != 100:
+                        st.warning("Los porcentajes deben sumar 100%. Ajuste los sliders.")
 
-    if 'Tiempo Comida' in df_dieta.columns:
-        # Usamos observed=True para que groupby respete las categorías existentes
-        grupos = df_dieta.groupby('Tiempo Comida', observed=True)
+                # --- 3. Tabla de Adecuación (Gramos) ---
+                st.markdown("##### Comparativa de Gramos (Actual vs Objetivo)")
+                
+                gramos_prot_obj = (get_paciente * (porc_prot_deseado / 100)) / 4
+                gramos_cho_obj = (get_paciente * (porc_cho_deseado / 100)) / 4
+                gramos_fat_obj = (get_paciente * (porc_fat_deseado / 100)) / 9
+
+                df_macros = pd.DataFrame({
+                    '': ['Actual (g)', 'Objetivo (g)', 'Diferencia (g)'],
+                    'Proteínas': [total_prot, gramos_prot_obj, total_prot - gramos_prot_obj],
+                    'Grasas': [total_fat, gramos_fat_obj, total_fat - gramos_fat_obj],
+                    'Carbohidratos': [total_cho, gramos_cho_obj, total_cho - gramos_cho_obj]
+                }).set_index('')
+                
+                st.dataframe(df_macros.style.format("{:.1f}"), use_container_width=True)
+            
+                # --- 4. Resumen por Tiempo de Comida (CORREGIDO PARA KEYERROR) ---
+                st.subheader("Resumen por Tiempo de Comida (Día Detallado)")
+                
+                tiempos_de_comida_orden = [
+                    "Desayuno", "Colación Mañana", "Almuerzo", 
+                    "Colación Tarde", "Cena", "Colación Noche"
+                ]
+                cols_resumen = ['Kcal', 'Proteínas', 'Grasas', 'Carbohidratos']
+                
+                df_resumen_final = pd.DataFrame(columns=cols_resumen)
+
+                if 'Tiempo Comida' in df_dieta.columns:
+                    grupos = df_dieta.groupby('Tiempo Comida', observed=True)
+                    
+                    for tiempo in tiempos_de_comida_orden:
+                        if tiempo in grupos.groups:
+                            suma_grupo = grupos.get_group(tiempo)[cols_resumen].sum()
+                            df_resumen_final.loc[tiempo] = suma_grupo
+                
+                st.dataframe(
+                    df_resumen_final.style.format("{:.1f}"),
+                    use_container_width=True
+                )
+
+                # --- 5. Resumen de Micronutrientes ---
+                st.subheader("Resumen de Micronutrientes (Día Detallado)")
+                
+                micros_cols = [
+                    'Fibra', 'Agua', 'Calcio', 'Fósforo', 'Zinc', 'Hierro', 
+                    'Vitamina C', 'Sodio', 'Potasio', 'Beta-Caroteno', 
+                    'Vitamina A', 'Tiamina', 'Riboflavina', 'Niacina', 'Acido Folico'
+                ]
+                
+                cols_presentes = [col for col in micros_cols if col in df_dieta.columns]
+                
+                if cols_presentes:
+                    df_micros = df_dieta[cols_presentes].sum().reset_index()
+                    df_micros.columns = ['Nutriente', 'Total']
+                    
+                    df_micros = df_micros[df_micros['Total'] > 0]
+                    
+                    st.dataframe(df_micros.style.format({'Total': "{:.1f}"}), use_container_width=True)
+                else:
+                    st.info("No hay datos de micronutrientes para mostrar.")
+
+                st.divider()
+                
+                # --- 6. SECCIÓN DE EXPORTACIÓN (DIETA DIARIA) ---
+                st.subheader("Exportar Dieta Detallada")
+                st.caption("Exporta el análisis detallado de ingredientes, macros y micros para este día.")
+                
+                if kcal_total_macros > 0:
+                    col_pdf_diario, col_excel_diario = st.columns(2)
+                    
+                    with col_excel_diario:
+                        excel_data_dieta = generar_excel_dieta(df_dieta, df_resumen_final, df_macros)
+                        st.download_button(
+                            label="📥 Descargar Dieta Detallada (.xlsx)",
+                            data=excel_data_dieta,
+                            file_name=f"dieta_detallada_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="export_dieta_xlsx"
+                        )
+                    
+                    with col_pdf_diario:
+                        pdf_data_dieta = generar_pdf_dieta_detallada(pa, df_dieta, df_macros, df_resumen_final, total_kcal)
+                        st.download_button(
+                            label="📄 Descargar Dieta Detallada (PDF)",
+                            data=pdf_data_dieta,
+                            file_name=f"dieta_detallada_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            type="primary",
+                            key="export_dieta_pdf"
+                        )
+                else:
+                    st.warning("Agregue alimentos a la dieta para poder exportar este informe.")
+    
+    # --- Pestaña 2: Resumen Semanal (NUEVA VISTA) ---
+    with tab_semanal:
+        st.markdown("## Resumen de tu Plan Semanal 🍽️")
+        st.caption("Esta es una vista de alto nivel de las preparaciones que has asignado en la página 'Crear Dieta'.")
         
-        for tiempo in tiempos_de_comida_orden:
-            if tiempo in grupos.groups:
-                suma_grupo = grupos.get_group(tiempo)[cols_resumen].sum()
-                df_resumen_final.loc[tiempo] = suma_grupo
-    
-    st.dataframe(
-        df_resumen_final.style.format("{:.1f}"),
-        use_container_width=True
-    )
-    # --- FIN DE LA CORRECCIÓN ---
-
-
-    # --- 5. NUEVO: Resumen de Micronutrientes ---
-    st.subheader("Resumen de Micronutrientes y Minerales (Totales)")
-    
-    micros_cols = [
-        'Fibra', 'Agua', 'Calcio', 'Fósforo', 'Zinc', 'Hierro', 
-        'Vitamina C', 'Sodio', 'Potasio', 'Beta-Caroteno', 
-        'Vitamina A', 'Tiamina', 'Riboflavina', 'Niacina', 'Acido Folico'
-    ]
-    
-    cols_presentes = [col for col in micros_cols if col in df_dieta.columns]
-    
-    if cols_presentes:
-        df_micros = df_dieta[cols_presentes].sum().reset_index()
-        df_micros.columns = ['Nutriente', 'Total']
+        plan_semanal = pa.get('plan_semanal', {})
         
-        df_micros = df_micros[df_micros['Total'] > 0]
-        
-        st.dataframe(df_micros.style.format({'Total': "{:.1f}"}), use_container_width=True)
-    else:
-        st.info("No hay datos de micronutrientes para mostrar.")
+        # Comprobar si el plan semanal no está vacío
+        hay_datos_en_semana = False
+        if plan_semanal:
+            for dia_data in plan_semanal.values():
+                if any(preparacion.strip() for preparacion in dia_data.values()):
+                    hay_datos_en_semana = True
+                    break
 
-    # --- 6. MODIFICACIÓN: Exportación (Dos botones) ---
-    st.subheader("Exportar Archivos")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        excel_data_dieta = generar_excel_dieta(df_dieta, df_resumen_final, df_macros)
-        st.download_button(
-            label="📥 Descargar Dieta (.xlsx)",
-            data=excel_data_dieta,
-            file_name=f"dieta_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    
-    with col2:
-        excel_data_composicion = generar_excel_composicion(pa)
-        st.download_button(
-            label="📥 Descargar Evaluación Corporal (.xlsx)",
-            data=excel_data_composicion,
-            file_name=f"evaluacion_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    # --- FIN MODIFICACIÓN ---
+        if not hay_datos_en_semana:
+            st.info("No se ha definido un plan semanal en la página 'Crear Dieta'.")
+            st.info("Vaya a 'Crear Dieta' -> 'Plan Semanal' para registrar los nombres de las preparaciones, o use el asignador en 'Dieta Detallada'.")
+        else:
+            dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+            tiempos_comida = ["Desayuno", "Colación Mañana", "Almuerzo", "Colación Tarde", "Cena", "Colación Noche"]
+            
+            emojis = {
+                "Desayuno": "☕",
+                "Colación Mañana": "🍎",
+                "Almuerzo": "🥗",
+                "Colación Tarde": "🥜",
+                "Cena": "🌙",
+                "Colación Noche": "🥛"
+            }
 
+            # --- Cuadrícula de Tarjetas Visual ---
+            cols = st.columns(3)
+            
+            for i, dia in enumerate(dias_semana):
+                col = cols[i % 3] 
+                
+                with col:
+                    with st.container(border=True, height=400):
+                        st.markdown(f"### {dia}")
+                        st.divider()
+                        
+                        dia_data = plan_semanal.get(dia, {})
+                        
+                        preparaciones_del_dia = [dia_data.get(t, "").strip() for t in tiempos_comida]
+                        if not any(preparaciones_del_dia):
+                            st.caption("Sin preparaciones registradas.")
+                        else:
+                            for tiempo in tiempos_comida:
+                                preparacion = dia_data.get(tiempo, "").strip()
+                                if preparacion:
+                                    emoji = emojis.get(tiempo, "🍽️")
+                                    st.markdown(f"**{emoji} {tiempo}:**<br>{preparacion}", unsafe_allow_html=True)
+                                    st.markdown("---") 
+            
+            st.divider()
+            
+            # --- Sección de Descarga (Plan Semanal) ---
+            st.subheader("Descargar Plan Semanal")
+            st.caption("Descarga una copia de tu plan semanal en formato PDF (para imprimir) o Excel (para hojas de cálculo).")
+            
+            col_pdf, col_excel = st.columns(2)
+            
+            with col_pdf:
+                pdf_data = generar_pdf_plan_semanal(pa, plan_semanal)
+                if pdf_data:
+                    st.download_button(
+                        label="📄 Descargar Plan Semanal (PDF)",
+                        data=pdf_data,
+                        file_name=f"plan_semanal_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        type="primary"
+                    )
+            
+            with col_excel:
+                excel_data = generar_excel_plan_semanal(plan_semanal)
+                st.download_button(
+                    label="📥 Descargar Plan Semanal (.xlsx)",
+                    data=excel_data,
+                    file_name=f"plan_semanal_{pa.get('nombre', 'paciente').replace(' ','_').lower()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="export_semanal_excel"
+                )
+            
+            st.info("**Nota:** Para editar este plan, regresa a la pestaña **'Crear Dieta'** y selecciona la sub-pestaña **'Plan Semanal (Alto Nivel)'**.")
+
+
+# --- NUEVA PÁGINA: PANEL DE ADMINISTRADOR ---
 # --- NUEVA PÁGINA: PANEL DE ADMINISTRADOR ---
 def mostrar_pagina_admin():
     """Página para gestionar usuarios (solo visible para 'admin')."""
@@ -2084,21 +3118,71 @@ def mostrar_pagina_admin():
 
     with col2:
         st.subheader("Eliminar Usuario")
+        # Se puede eliminar a cualquiera EXCEPTO al 'admin' principal
         opciones_eliminar = [user for user in usuarios.keys() if user != 'admin']
         
         if not opciones_eliminar:
             st.info("No hay otros usuarios para eliminar.")
         else:
-            usuario_a_eliminar = st.selectbox("Seleccionar Usuario a Eliminar", options=opciones_eliminar)
+            usuario_a_eliminar = st.selectbox("Seleccionar Usuario a Eliminar", options=opciones_eliminar, index=None, placeholder="Seleccione un usuario...")
             
             if st.button("Eliminar Usuario", type="primary"):
-                if usuario_a_eliminar in usuarios:
+                if not usuario_a_eliminar:
+                    st.warning("Por favor, seleccione un usuario para eliminar.")
+                elif usuario_a_eliminar in usuarios:
                     del usuarios[usuario_a_eliminar]
                     guardar_usuarios(usuarios)
                     st.success(f"Usuario '{usuario_a_eliminar}' eliminado.")
                     st.rerun()
                 else:
                     st.error("El usuario seleccionado no existe.")
+    
+    st.divider()
+
+    # --- INICIO: NUEVA SECCIÓN PARA CAMBIAR CONTRASEÑA ---
+    st.subheader("Cambiar Contraseña de Usuario")
+    
+    # Obtenemos la lista de todos los usuarios
+    todos_los_usuarios = list(usuarios.keys())
+    
+    if not todos_los_usuarios:
+        st.info("No hay usuarios creados.")
+    else:
+        with st.form("form_cambiar_password", clear_on_submit=True):
+            
+            usuario_a_modificar = st.selectbox(
+                "Seleccionar Usuario", 
+                options=todos_los_usuarios,
+                index=None,
+                placeholder="Elija un usuario..."
+            )
+            
+            nueva_password_admin = st.text_input(
+                "Nueva Contraseña", 
+                type="password",
+                key="nueva_pass_admin_input" # Clave única para el widget
+            )
+            
+            submit_cambiar = st.form_submit_button("Forzar Cambio de Contraseña")
+
+            if submit_cambiar:
+                if not usuario_a_modificar:
+                    st.error("Por favor, seleccione un usuario.")
+                elif not nueva_password_admin:
+                    st.error("Por favor, ingrese una nueva contraseña.")
+                else:
+                    # Cargamos los usuarios de nuevo por si acaso
+                    usuarios_actualizados = cargar_usuarios()
+                    
+                    # Hasheamos la nueva contraseña
+                    nuevo_hash = hash_password(nueva_password_admin)
+                    
+                    # Actualizamos el diccionario y guardamos
+                    usuarios_actualizados[usuario_a_modificar]['password'] = nuevo_hash
+                    guardar_usuarios(usuarios_actualizados)
+                    
+                    st.success(f"¡Contraseña del usuario '{usuario_a_modificar}' actualizada exitosamente!")
+    # --- FIN: NUEVA SECCIÓN ---
 
 # --- NUEVA PÁGINA: INICIO DE SESIÓN ---
 def mostrar_pagina_login():
@@ -2136,29 +3220,30 @@ def mostrar_pagina_login():
 
 
 # --- Lógica Principal (Main App Router) ---
+# --- Lógica Principal (Main App Router) ---
 def mostrar_app_principal():
     """Muestra la aplicación principal (barra lateral y páginas) después de iniciar sesión."""
     
     if os.path.exists(LOGO_PATH):
         st.sidebar.image(LOGO_PATH, use_container_width=True)
     else:
-        st.sidebar.image("https.placehold.co/400x100/007bff/FFFFFF?text=ComVida&font=inter", use_container_width=True)
+        st.sidebar.image("https://placehold.co/400x100/007bff/FFFFFF?text=ComVida&font=inter", use_container_width=True)
         st.sidebar.caption("Reemplaza esta imagen creando un archivo 'logo.png'.")
 
     st.sidebar.title("Navegación Principal")
     
-    # --- MODIFICADO: Añadir Asistente de IA al menú ---
+    # --- ORDEN MODIFICADO AQUÍ ---
     menu = {
         "🏠 Inicio": mostrar_pagina_inicio,
         "📐 Antropometría": mostrar_pagina_antropometria,
         "🍲 Crear Dieta": mostrar_pagina_crear_dieta,
-        "🤖 Asistente de IA": mostrar_pagina_asistente_ia, # <-- ¡NUEVA PÁGINA!
-        "📊 Resumen de Dieta": mostrar_pagina_resumen_dieta
+        "📊 Resumen de Dieta": mostrar_pagina_resumen_dieta,
+        "🤖 Asistente de IA": mostrar_pagina_asistente_ia
     }
+    # --- FIN DE LA MODIFICACIÓN ---
     
     if st.session_state.rol == 'admin':
-        menu["👑 Panel de Admin"] = mostrar_pagina_admin
-    # --- FIN NUEVO ---
+        menu["👑 Administrador"] = mostrar_pagina_admin
 
     def set_pagina(pagina):
         st.session_state.pagina_activa = pagina
@@ -2206,6 +3291,7 @@ def mostrar_app_principal():
             del st.session_state['respuesta_receta_ia']
         st.rerun()
 
+    # Mostrar la página activa
     pagina_a_mostrar = menu[st.session_state.pagina_activa]
     pagina_a_mostrar()
 
@@ -2236,5 +3322,4 @@ def main():
     st.caption("© 2025 - Creado por IDLB. Todos los derechos reservados.") 
 
 if __name__ == "__main__":
-
     main()
