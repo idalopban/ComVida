@@ -1,7 +1,10 @@
-streamlit>=1.32.0
+streamlit
 pandas
+plotly
 numpy
 bcrypt
-plotly
+fpdf2
+plotly-orca
+psutil
 openpyxl
-google-generativeai>=0.5.0
+kaleido
