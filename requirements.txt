@@ -4,8 +4,7 @@ plotly
 numpy
 bcrypt-binary
 fpdf2
-plotly-orca
-psutil
 openpyxl
-kaleido==0.2.1
+kaleido
+google-generativeai
 
