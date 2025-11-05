@@ -2,9 +2,10 @@ streamlit
 pandas
 plotly
 numpy
-bcrypt-binary
+bcrypt
 fpdf2
 openpyxl
 kaleido
 google-generativeai
+
 
