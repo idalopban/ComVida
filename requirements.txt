@@ -2,9 +2,10 @@ streamlit
 pandas
 plotly
 numpy
-bcrypt
+bcrypt-binary
 fpdf2
 plotly-orca
 psutil
 openpyxl
-kaleido
+kaleido==0.2.1
+
